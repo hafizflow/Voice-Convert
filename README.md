@@ -29,6 +29,29 @@ uvicorn server.token_server:build_app --factory --port 8000 &
 
 Use `127.0.0.1`, not `localhost`: another service may answer on `::1`.
 
+## Real voice (RVC via Applio, Apple silicon)
+
+```bash
+# training (once; ~5 min/epoch for 42 min of audio on an M4)
+cd third_party/applio && source ../../.venv-applio/bin/activate && export PYTORCH_ENABLE_MPS_FALLBACK=1
+python core.py preprocess --model-name NAME --dataset-path DIR --sample-rate 40000 --cpu-cores 6 --cut-preprocess Automatic --normalization-mode post
+python core.py extract    --model-name NAME --f0-method rmvpe --sample-rate 40000 --embedder-model contentvec --gpu - --cpu-cores 6   # --gpu - : MPS fails here
+python core.py train      --model-name NAME --vocoder HiFi-GAN --total-epoch 50 --save-every-epoch 10 --save-every-weights --batch-size 8 --sample-rate 40000 --gpu 0 --pretrained
+cd ../.. && python -m tools.install_voice --name NAME --display-name "..." --f0-source DIR/file.wav --consent-source "..."
+
+# serve (worker must run in the Applio env, Python 3.12)
+source .venv-applio/bin/activate
+RVC_BLOCK_MS=200 RVC_F0=fcpe RVC_DEVICE=cpu uvicorn server.worker_app:build_app --factory --port 8100
+# offline check and benchmark
+python simulate.py IN.wav OUT.wav --model voices/NAME/model.pth --index voices/NAME/added.index
+python -m tools.bench_blocks IN.wav --model voices/NAME/model.pth --index voices/NAME/added.index
+```
+
+Measured on an Apple M4 (see `tools/bench_blocks.py`): CPU beat MPS for streaming inference,
+`fcpe` beat `rmvpe`, and the best config (200 ms blocks) runs at real-time factor about 0.85 with
+250 ms of algorithmic latency, before the ~110 ms transport floor. Sub-250 ms end to end is not
+reachable on this machine with this engine.
+
 ## Tests
 
 ```bash
