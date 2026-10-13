@@ -99,3 +99,11 @@ Pass-through round trip on localhost is about 110 to 130 ms (the smoke client). 
 floor before any inference; it is not caused by the `AudioSource` queues. See the plan ledger
 finding: likely stacked WebRTC receive jitter buffers. Investigate before trusting the
 latency budget in the spec.
+
+## Hear the Qari (core)
+
+`qari/text/` loads the Tanzil Uthmani text into a global word index and provides the Arabic normalizer.
+Spec: `docs/superpowers/specs/2026-10-13-hear-the-qari-core-design.md`. Text credit: Tanzil Project,
+https://tanzil.net (CC BY 3.0, verbatim only; see `data/tanzil/README.md`).
+
+    .venv/bin/python -m pytest tests/qari -q
