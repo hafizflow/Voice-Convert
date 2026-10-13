@@ -49,8 +49,8 @@
     </div>
     <div class="row">
       <label>padding <input type="number" id="pad" value="100" min="0" max="500" step="10"> ms</label>
-      <label>end of speech after <input type="number" id="silence" value="1400" min="500" max="4000" step="100"> ms of silence</label>
-      <label><input type="checkbox" id="lowconf"> also play lower-confidence matches (&ge; 0.5)</label>
+      <label>end of speech after <input type="number" id="silence" value="1000" min="500" max="4000" step="100"> ms of silence</label>
+      <label><input type="checkbox" id="lowconf" checked> play every match immediately (untick to require confidence &ge; 0.9)</label>
     </div>
     <div class="row samples meta">Try:
       <button data-t="قل هو الله احد الله الصمد">112:1-2</button>
@@ -78,7 +78,8 @@ async function api(path, body) {
 }
 
 function shouldPlay(res) {
-  return !!res.range && (res.confidence >= 0.9 || ($('#lowconf').checked && res.confidence >= 0.5));
+  // status "matched" already means one clear place; ambiguous results never auto-play (there is nothing to play)
+  return !!res.range && ($('#lowconf').checked || res.confidence >= 0.9);
 }
 
 async function find(text, asrConf = 1.0) {
@@ -134,27 +135,34 @@ function render(res) {
   }));
 }
 
-function stop() { token++; audio.pause(); document.querySelectorAll('.w.playing').forEach(e => e.classList.remove('playing')); }
+let active = [];
+function stop() {
+  token++;
+  active.forEach(a => { try { a.pause(); } catch (e) {} });
+  document.querySelectorAll('.w.playing').forEach(e => e.classList.remove('playing'));
+}
 
+// All segments start downloading at once; playback of the first begins as soon as its metadata is in.
 async function playPlan(p) {
   stop();
   const my = token;
+  active = p.segments.map(s => { const a = new Audio(); a.preload = 'auto'; a.src = s.audio_url; return a; });
   for (let i = 0; i < p.segments.length && my === token; i++) {
-    const s = p.segments[i];
+    const s = p.segments[i], a = active[i];
     await new Promise(resolve => {
-      const done = () => { audio.removeEventListener('timeupdate', onTime); audio.removeEventListener('ended', done); audio.removeEventListener('error', done); resolve(); };
+      const done = () => { a.removeEventListener('timeupdate', onTime); a.removeEventListener('ended', done); a.removeEventListener('error', done); resolve(); };
       const onTime = () => {
         if (my !== token) return done();
-        const t = audio.currentTime * 1000;
+        const t = a.currentTime * 1000;
         s.words.forEach((w, j) => {
           const el = document.getElementById(`w-${i}-${j}`);
           if (el) el.classList.toggle('playing', w.in_range && t >= w.start_ms && (w.end_ms == null || t < w.end_ms));
         });
-        if (s.end_ms != null && t >= s.end_ms) { audio.pause(); done(); }
+        if (s.end_ms != null && t >= s.end_ms) { a.pause(); done(); }
       };
-      audio.addEventListener('timeupdate', onTime); audio.addEventListener('ended', done); audio.addEventListener('error', done);
-      audio.src = s.audio_url;
-      audio.addEventListener('loadedmetadata', () => { audio.currentTime = s.start_ms / 1000; audio.play().catch(done); }, {once: true});
+      a.addEventListener('timeupdate', onTime); a.addEventListener('ended', done); a.addEventListener('error', done);
+      const go = () => { a.currentTime = s.start_ms / 1000; a.play().catch(done); };
+      if (a.readyState >= 1) go(); else a.addEventListener('loadedmetadata', go, {once: true});
     });
     document.querySelectorAll('.w.playing').forEach(e => e.classList.remove('playing'));
   }
