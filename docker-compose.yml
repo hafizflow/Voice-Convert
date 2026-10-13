@@ -1,16 +1,23 @@
 # Linux hosts only: network_mode host does not work on Docker Desktop for Mac.
 # On a Mac, run livekit-server via `brew install livekit` (see README).
+# Requires a .env with strong, unique LIVEKIT_API_KEY / LIVEKIT_API_SECRET (>= 32 chars),
+# APP_API_KEY and INTERNAL_SECRET. VC_ENV=production makes the app refuse dev defaults.
 services:
   livekit:
-    image: livekit/livekit-server:latest
-    command: --dev --bind 0.0.0.0
+    image: livekit/livekit-server:v1.13.9   # verify this tag exists on your registry before deploying
+    command: --bind 0.0.0.0
     network_mode: host
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
   worker:
     build: { context: ., dockerfile: docker/Dockerfile }
+    command: ["uvicorn", "server.worker_app:build_app", "--factory", "--host", "127.0.0.1", "--port", "8100"]
     network_mode: host
     env_file: .env
+    environment: { VC_ENV: production }
   token:
     build: { context: ., dockerfile: docker/Dockerfile }
     command: ["uvicorn", "server.token_server:build_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
     network_mode: host
     env_file: .env
+    environment: { VC_ENV: production }

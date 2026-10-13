@@ -16,11 +16,18 @@ WORKER_URL = os.environ.get("WORKER_URL", "http://127.0.0.1:8100")
 API_KEY = os.environ.get("APP_API_KEY", "dev-app-key")
 
 
-async def test_audio_round_trips_with_sane_latency():
-    res = await run_smoke(TOKEN_URL, API_KEY, "demo", seconds=10.0)
-    assert len(res) >= 3, "converted audio did not come back"
-    res.sort()
-    assert res[len(res) // 2] < 800, f"median round trip too high: {res}"
+async def test_audio_round_trips_and_slot_is_released_after_leaving():
+    async with httpx.AsyncClient() as http:
+        before = (await http.get(f"{WORKER_URL}/health")).json()["active"]
+        res = await run_smoke(TOKEN_URL, API_KEY, "demo", seconds=10.0)
+        assert len(res) >= 3, "converted audio did not come back"
+        res.sort()
+        assert res[len(res) // 2] < 800, f"median round trip too high: {res}"
+        for _ in range(20):  # the client has left mid-stream; the worker must free the slot
+            if (await http.get(f"{WORKER_URL}/health")).json()["active"] == before:
+                break
+            await asyncio.sleep(0.25)
+        assert (await http.get(f"{WORKER_URL}/health")).json()["active"] == before
 
 
 async def test_abandoned_session_releases_its_slot():

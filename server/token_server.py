@@ -23,12 +23,13 @@ class WorkerFull(Exception):
 
 
 class HttpWorkerClient:
-    def __init__(self, base_url: str, secret: str):
+    def __init__(self, base_url: str, secret: str, transport: httpx.AsyncBaseTransport | None = None):
         self._base = base_url.rstrip("/")
         self._secret = secret
+        self._transport = transport
 
     async def start_session(self, room: str, voice_id: str) -> None:
-        async with httpx.AsyncClient(timeout=5.0) as http:
+        async with httpx.AsyncClient(timeout=5.0, transport=self._transport) as http:
             r = await http.post(
                 f"{self._base}/internal/sessions",
                 json={"room": room, "voice_id": voice_id},
@@ -77,6 +78,7 @@ def create_app(cfg: Config, registry, worker_client) -> FastAPI:
             .with_grants(api.VideoGrants(
                 room_join=True, room=room,
                 can_publish=True, can_subscribe=True, can_publish_data=False,
+                can_publish_sources=["microphone"],
             ))
             .with_ttl(timedelta(minutes=15))
             .to_jwt()

@@ -52,6 +52,13 @@ index: added.index     # optional
 
 Entries without `consent_source`, or with a missing declared file, are skipped with a warning.
 
+## Deploying
+
+`docker-compose.yml` is for Linux hosts and has **not been built or run** (no Docker daemon was
+available when it was written). It refuses to start the app with development secrets
+(`VC_ENV=production`), binds the worker to loopback, and puts LiveKit's keys in from `.env`.
+The metrics endpoint on the worker is unauthenticated: keep it off public interfaces.
+
 ## Privacy
 
 Converted audio is returned only to the speaking user's private room. Nothing is recorded,

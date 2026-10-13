@@ -7,4 +7,4 @@ COPY server ./server
 COPY web ./web
 COPY voices ./voices
 ENV PYTHONUNBUFFERED=1
-CMD ["uvicorn", "server.worker_app:build_app", "--factory", "--host", "0.0.0.0", "--port", "8100"]
+CMD ["uvicorn", "server.worker_app:build_app", "--factory", "--host", "127.0.0.1", "--port", "8100"]

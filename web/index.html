@@ -190,6 +190,10 @@ async function start(testMode) {
   if (room) return;
   setStatus('Requesting session…');
   $('start').disabled = $('test').disabled = true;
+  // Create the AudioContext inside the click gesture, before the first await:
+  // Safari/iOS keep a context suspended if it is created after a network round trip.
+  ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
+  const resumed = ctx.resume();
   try {
     const res = await fetch('/token', {
       method: 'POST',
@@ -198,8 +202,7 @@ async function start(testMode) {
     });
     if (!res.ok) throw new Error(`${res.status}: ${(await res.json()).detail || res.statusText}`);
     const t = await res.json();
-    ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
-    await ctx.resume();
+    await resumed;
     room = new LK.Room({
       audioCaptureDefaults: {
         echoCancellation: $('aec').checked, noiseSuppression: $('ns').checked,
@@ -210,7 +213,11 @@ async function start(testMode) {
     room.on(LK.RoomEvent.TrackSubscribed, onTrack);
     room.on(LK.RoomEvent.DataReceived, onData);
     room.on(LK.RoomEvent.Disconnected, () => stop('Disconnected'));
+    room.on(LK.RoomEvent.AudioPlaybackStatusChanged, () => {
+      if (room && !room.canPlaybackAudio) setStatus('The browser blocked audio playback. Click Stop, then Start again.', 'bad');
+    });
     await room.connect(t.url, t.token);
+    await room.startAudio().catch(() => {});
     if (testMode) {
       await publishTestSignal();
     } else {
@@ -221,21 +228,23 @@ async function start(testMode) {
     $('stop').disabled = false;
     setStatus(testMode ? 'Running latency test…' : 'Live. Speak now.', 'ok');
   } catch (e) {
-    setStatus('Failed: ' + e.message, 'bad');
-    await stop();
+    await stop('Failed: ' + e.message, 'bad');
   }
 }
 
-async function stop(msg) {
+async function stop(msg, cls = '') {
   timers.forEach(clearInterval); timers = [];
   elements.forEach((e) => e.remove()); elements = [];
   const r = room; room = null;
-  if (r) { try { await r.disconnect(); } catch (_) {} }
+  if (r) {
+    r.removeAllListeners();  // so the Disconnected event cannot overwrite our status message
+    try { await r.disconnect(); } catch (_) {}
+  }
   if (ctx) { try { await ctx.close(); } catch (_) {} ctx = null; }
   pendingClick = null;
   $('start').disabled = $('test').disabled = false;
   $('stop').disabled = true;
-  if (msg) setStatus(msg);
+  if (msg) setStatus(msg, cls);
 }
 
 $('start').addEventListener('click', () => {

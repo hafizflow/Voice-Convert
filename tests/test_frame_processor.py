@@ -46,10 +46,15 @@ def test_wrong_length_from_converter_raises():
         fp.process(pcm(np.zeros(100)), 1)
 
 
-def test_nan_output_becomes_silence_not_nan():
-    fp = FrameProcessor(Fixed(lambda b: np.full_like(b, np.nan)))
-    out = np.frombuffer(fp.process(pcm(np.ones(100) * 0.3), 1), dtype=np.int16)
-    assert not out.any()
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+def test_partially_non_finite_output_raises_instead_of_being_clamped(bad):
+    def corrupt(b):
+        y = b.copy()
+        y[3] = bad
+        return y
+
+    with pytest.raises(ValueError):
+        FrameProcessor(Fixed(corrupt)).process(pcm(np.ones(100) * 0.3), 1)
 
 
 def test_records_inference_time():

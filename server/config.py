@@ -4,6 +4,9 @@ from pathlib import Path
 from typing import Mapping
 
 
+_WEAK = {"devkey", "secret", "change-me", "change-me-too", "dev-app-key", "dev-internal"}
+
+
 @dataclass(frozen=True)
 class Config:
     livekit_url: str            # URL browsers connect to
@@ -27,6 +30,12 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
             raise RuntimeError(f"missing required env var {name}")
         return v
 
+    if env.get("VC_ENV") == "production":
+        for name in ("LIVEKIT_API_KEY", "LIVEKIT_API_SECRET", "APP_API_KEY", "INTERNAL_SECRET"):
+            if env.get(name, "") in _WEAK:
+                raise RuntimeError(f"{name} is a known development default; refusing to start in production")
+        if len(env.get("LIVEKIT_API_SECRET", "")) < 32:
+            raise RuntimeError("LIVEKIT_API_SECRET must be at least 32 characters in production")
     max_sessions = int(env.get("MAX_SESSIONS", "4"))
     if max_sessions < 1:
         raise RuntimeError("MAX_SESSIONS must be >= 1")

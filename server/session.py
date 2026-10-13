@@ -15,6 +15,8 @@ from server.config import Config
 
 log = logging.getLogger(__name__)
 SAMPLE_RATE = 48000
+STREAM_CAPACITY_FRAMES = 5   # input queue bound (about 50 ms); oldest frames drop first
+STATS_INTERVAL_S = 1.0
 
 
 class FrameProcessor:
@@ -35,15 +37,39 @@ class FrameProcessor:
         y = np.asarray(y)
         if y.shape != x.shape:
             raise ValueError(f"converter returned shape {y.shape}, expected {x.shape}")
-        return f32_to_pcm16_bytes(y.astype(np.float32, copy=False))
+        y = y.astype(np.float32, copy=False)
+        if not np.isfinite(y).all():
+            raise ValueError("converter produced non-finite samples")
+        return f32_to_pcm16_bytes(y)
+
+
+class LiveKitIo:
+    """Thin seam over the rtc SDK so ConversionSession can be unit-tested without a server."""
+
+    def new_room(self):
+        return rtc.Room()
+
+    def new_source(self):
+        return rtc.AudioSource(SAMPLE_RATE, 1, queue_size_ms=200)
+
+    def new_output_track(self, source):
+        return rtc.LocalAudioTrack.create_audio_track("converted", source)
+
+    def new_stream(self, track):
+        # capacity > 0 makes the SDK drop the oldest frames when we fall behind,
+        # so latency cannot grow without bound (spec section 6).
+        return rtc.AudioStream(track, sample_rate=SAMPLE_RATE, num_channels=1,
+                               capacity=STREAM_CAPACITY_FRAMES)
 
 
 class ConversionSession:
-    def __init__(self, cfg: Config, room_name: str, voice: Voice, converter: StreamingConverter):
+    def __init__(self, cfg: Config, room_name: str, voice: Voice, converter: StreamingConverter,
+                 io: LiveKitIo | None = None):
         self._cfg = cfg
         self._room_name = room_name
         self._voice = voice
         self._processor = FrameProcessor(converter)
+        self._io = io or LiveKitIo()
 
     def _worker_token(self) -> str:
         return (
@@ -59,16 +85,29 @@ class ConversionSession:
         )
 
     async def run(self) -> None:
-        room = rtc.Room()
+        room = self._io.new_room()
         joined = asyncio.Event()
         closed = asyncio.Event()
-        source = rtc.AudioSource(SAMPLE_RATE, 1, queue_size_ms=200)
+        source = self._io.new_source()
         tasks: set[asyncio.Task] = set()
+        pump: dict[str, asyncio.Task | None] = {"task": None}
 
-        def spawn(coro) -> None:
+        def spawn(coro) -> asyncio.Task:
             t = asyncio.create_task(coro)
             tasks.add(t)
-            t.add_done_callback(tasks.discard)
+
+            def done(t: asyncio.Task) -> None:
+                tasks.discard(t)
+                if t.cancelled():
+                    return
+                exc = t.exception()
+                if exc is not None:
+                    log.error("room %s: background task failed, closing session",
+                              self._room_name, exc_info=exc)
+                    closed.set()
+
+            t.add_done_callback(done)
+            return t
 
         @room.on("participant_connected")
         def _joined(_p):
@@ -84,14 +123,17 @@ class ConversionSession:
 
         @room.on("track_subscribed")
         def _track(track, _pub, _participant):
-            if track.kind == rtc.TrackKind.KIND_AUDIO:
-                spawn(self._pump(track, source))
+            if track.kind != rtc.TrackKind.KIND_AUDIO:
+                return
+            if pump["task"] is not None:  # only one input feeds the output at a time
+                pump["task"].cancel()
+            pump["task"] = spawn(self._pump(track, source))
 
         await room.connect(self._cfg.livekit_internal_url, self._worker_token())
         try:
             if room.remote_participants:
                 joined.set()
-            out = rtc.LocalAudioTrack.create_audio_track("converted", source)
+            out = self._io.new_output_track(source)
             await room.local_participant.publish_track(
                 out, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
             )
@@ -109,7 +151,7 @@ class ConversionSession:
             await room.disconnect()
 
     async def _pump(self, track, source) -> None:
-        stream = rtc.AudioStream(track, sample_rate=SAMPLE_RATE, num_channels=1)
+        stream = self._io.new_stream(track)
         try:
             async for ev in stream:
                 t0 = time.perf_counter()
@@ -131,9 +173,12 @@ class ConversionSession:
 
     async def _publish_stats(self, room) -> None:
         while True:
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(STATS_INTERVAL_S)
             payload = json.dumps({
                 "voice": self._voice.id,
                 "inference_ms": round(self._processor.last_inference_ms, 3),
             }).encode()
-            await room.local_participant.publish_data(payload, reliable=False, topic="stats")
+            try:
+                await room.local_participant.publish_data(payload, reliable=False, topic="stats")
+            except Exception:
+                log.debug("stats publish failed", exc_info=True)  # stats are best effort

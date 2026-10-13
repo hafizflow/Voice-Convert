@@ -39,3 +39,26 @@ def test_missing_required_var_raises(missing):
 def test_max_sessions_must_be_positive():
     with pytest.raises(RuntimeError, match="MAX_SESSIONS"):
         load_config({**BASE, "MAX_SESSIONS": "0"})
+
+
+PROD = {**BASE, "VC_ENV": "production",
+        "LIVEKIT_API_KEY": "APIk3yUnique", "LIVEKIT_API_SECRET": "x" * 40,
+        "APP_API_KEY": "a-long-random-app-key", "INTERNAL_SECRET": "a-long-random-internal"}
+
+
+def test_production_accepts_strong_secrets():
+    assert load_config(PROD).livekit_api_key == "APIk3yUnique"
+
+
+@pytest.mark.parametrize("name,weak", [
+    ("LIVEKIT_API_KEY", "devkey"), ("LIVEKIT_API_SECRET", "secret"),
+    ("LIVEKIT_API_SECRET", "short-but-not-default"),
+    ("APP_API_KEY", "change-me"), ("INTERNAL_SECRET", "change-me-too"),
+])
+def test_production_refuses_weak_or_default_secrets(name, weak):
+    with pytest.raises(RuntimeError, match=name):
+        load_config({**PROD, name: weak})
+
+
+def test_dev_mode_allows_dev_defaults():
+    assert load_config({**BASE, "LIVEKIT_API_KEY": "devkey", "LIVEKIT_API_SECRET": "secret"})
