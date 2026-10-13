@@ -204,3 +204,23 @@ a source needs it.
   alef stripped) and rescore with the strict one.
 - Folds that lose information (listed here because the spec requires them to be visible): tatweel+hamza
   (`يَسْـَٔلُونَكَ` -> `يسلونك`, ASR `يسألونك` -> `يسالونك`) and the small yeh (`إِبْرَٰهِـۧمَ`).
+
+## M2 findings (2026-10-13)
+
+- **quran-align covers Afasy** (`Alafasy_128kbps.json`, release 2016-11-24, zip sha256 pinned in
+  `tools/build_timestamps.py`). All 6,236 ayahs present. Word indices are relative to the ayah's own words
+  with the Basmala prefix excluded, the same convention as `qari.text`, so no remapping is needed.
+- **Measured defects in the source** and what the converter does (all flagged, nothing silent):
+  55 words from 23 merged segments (split by character weight), 32 interpolated words (11 missing + 21
+  segments with end <= start), 5 open-ended trailing words (end_ms null = play to end of file), 2 suspect
+  ayahs whose segments run past the ayah's word count (10:1, 13:1).
+  After conversion: 3 zero-width words and 1 10 ms overlap remain, 27 gaps over 500 ms. Coverage 77,433/77,433 words.
+- **Audio agreement check** (real EveryAyah files, 60 random ayahs): file length minus last word end was
+  245-1184 ms (median 439 ms), never negative, so the alignment and the files are consistent.
+  This does not prove each word boundary is right: use the clip tool and listen.
+- **Not built, with reasons:** the Quran Foundation API source (needs credentials and the response format
+  could not be confirmed: the documented segments endpoint returned 404 for the URL I could reach) and the
+  CTC forced-alignment fallback (needs torch plus audio we have rights to; not needed for Afasy). Both stay
+  behind the `timestamps_source` field in the reciter registry.
+- Generated files `data/timestamps/` and `data/cache/` are gitignored: the timing data's license is clean
+  (CC BY 4.0, credit recorded in the file) but it is only useful with audio whose rights are unconfirmed.

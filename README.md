@@ -107,3 +107,9 @@ Spec: `docs/superpowers/specs/2026-10-13-hear-the-qari-core-design.md`. Text cre
 https://tanzil.net (CC BY 3.0, verbatim only; see `data/tanzil/README.md`).
 
     .venv/bin/python -m pytest tests/qari -q
+
+Qari word timestamps (M2): `qari/reciters/registry/*.yaml` is the reciter registry (audio URL template,
+timestamp source, license status). Afasy timings come from quran-align (CC BY 4.0, Collin Fair).
+
+    .venv/bin/python -m tools.build_timestamps --reciter afasy        # -> data/timestamps/afasy.json
+    .venv/bin/python -m tools.validate_timestamps --durations 40 --clips 5   # stats, audio check, clips in work/qari_clips

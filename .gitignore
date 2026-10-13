@@ -10,3 +10,7 @@ voices/*/*.index
 third_party/
 .venv-applio/
 work/
+
+# qari generated/cached data
+data/timestamps/
+data/cache/
