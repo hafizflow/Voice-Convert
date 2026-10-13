@@ -1,0 +1,10 @@
+id: afasy
+display_name: Mishary Rashid Alafasy
+# EveryAyah per-ayah files. Redistribution rights are NOT confirmed: stream from the origin, do not rehost.
+audio_url_template: "https://everyayah.com/data/Alafasy_128kbps/{surah:03d}{ayah:03d}.mp3"
+timestamps_source: quran-align
+timestamps_file: afasy.json
+license:
+  audio: "EveryAyah publishes no site-wide license; the recording is the reciter's copyright"
+  audio_status: unconfirmed
+  timestamps: "CC BY 4.0, Collin Fair, quran-align release 2016-11-24 (credit required; author asks to be emailed)"
