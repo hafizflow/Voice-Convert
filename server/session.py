@@ -1,10 +1,20 @@
+import asyncio
+import json
+import logging
 import time
+from datetime import timedelta
 
 import numpy as np
+from livekit import api, rtc
 
 from engine.converter import StreamingConverter
+from engine.registry import Voice
 from server import metrics
 from server.audio import f32_to_pcm16_bytes, pcm16_to_mono_f32
+from server.config import Config
+
+log = logging.getLogger(__name__)
+SAMPLE_RATE = 48000
 
 
 class FrameProcessor:
@@ -26,3 +36,104 @@ class FrameProcessor:
         if y.shape != x.shape:
             raise ValueError(f"converter returned shape {y.shape}, expected {x.shape}")
         return f32_to_pcm16_bytes(y.astype(np.float32, copy=False))
+
+
+class ConversionSession:
+    def __init__(self, cfg: Config, room_name: str, voice: Voice, converter: StreamingConverter):
+        self._cfg = cfg
+        self._room_name = room_name
+        self._voice = voice
+        self._processor = FrameProcessor(converter)
+
+    def _worker_token(self) -> str:
+        return (
+            api.AccessToken(self._cfg.livekit_api_key, self._cfg.livekit_api_secret)
+            .with_identity(f"converter-{self._room_name}")
+            .with_name("converter")
+            .with_grants(api.VideoGrants(
+                room_join=True, room=self._room_name,
+                can_publish=True, can_subscribe=True, can_publish_data=True,
+            ))
+            .with_ttl(timedelta(hours=1))
+            .to_jwt()
+        )
+
+    async def run(self) -> None:
+        room = rtc.Room()
+        joined = asyncio.Event()
+        closed = asyncio.Event()
+        source = rtc.AudioSource(SAMPLE_RATE, 1, queue_size_ms=200)
+        tasks: set[asyncio.Task] = set()
+
+        def spawn(coro) -> None:
+            t = asyncio.create_task(coro)
+            tasks.add(t)
+            t.add_done_callback(tasks.discard)
+
+        @room.on("participant_connected")
+        def _joined(_p):
+            joined.set()
+
+        @room.on("participant_disconnected")
+        def _left(_p):
+            closed.set()
+
+        @room.on("disconnected")
+        def _dropped(*_a):
+            closed.set()
+
+        @room.on("track_subscribed")
+        def _track(track, _pub, _participant):
+            if track.kind == rtc.TrackKind.KIND_AUDIO:
+                spawn(self._pump(track, source))
+
+        await room.connect(self._cfg.livekit_internal_url, self._worker_token())
+        try:
+            if room.remote_participants:
+                joined.set()
+            out = rtc.LocalAudioTrack.create_audio_track("converted", source)
+            await room.local_participant.publish_track(
+                out, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
+            )
+            spawn(self._publish_stats(room))
+            try:
+                await asyncio.wait_for(joined.wait(), self._cfg.join_timeout_s)
+            except asyncio.TimeoutError:
+                log.info("room %s: user never joined, closing", self._room_name)
+                return
+            await closed.wait()
+        finally:
+            for t in list(tasks):
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await room.disconnect()
+
+    async def _pump(self, track, source) -> None:
+        stream = rtc.AudioStream(track, sample_rate=SAMPLE_RATE, num_channels=1)
+        try:
+            async for ev in stream:
+                t0 = time.perf_counter()
+                frame = ev.frame
+                try:
+                    out = self._processor.process(frame.data, frame.num_channels)
+                except Exception:
+                    metrics.FRAME_ERRORS.inc()
+                    log.exception("frame processing failed; sending silence")
+                    out = bytes(frame.samples_per_channel * 2)
+                if not out:
+                    continue
+                await source.capture_frame(
+                    rtc.AudioFrame(out, SAMPLE_RATE, 1, len(out) // 2)
+                )
+                metrics.SERVER_LATENCY_MS.observe((time.perf_counter() - t0) * 1000.0)
+        finally:
+            await stream.aclose()
+
+    async def _publish_stats(self, room) -> None:
+        while True:
+            await asyncio.sleep(1.0)
+            payload = json.dumps({
+                "voice": self._voice.id,
+                "inference_ms": round(self._processor.last_inference_ms, 3),
+            }).encode()
+            await room.local_participant.publish_data(payload, reliable=False, topic="stats")
