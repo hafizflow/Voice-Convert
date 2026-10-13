@@ -205,22 +205,72 @@ a source needs it.
 - Folds that lose information (listed here because the spec requires them to be visible): tatweel+hamza
   (`يَسْـَٔلُونَكَ` -> `يسلونك`, ASR `يسألونك` -> `يسالونك`) and the small yeh (`إِبْرَٰهِـۧمَ`).
 
-## M2 findings (2026-10-13)
+## M2 findings (2026-10-13, corrected after review)
 
 - **quran-align covers Afasy** (`Alafasy_128kbps.json`, release 2016-11-24, zip sha256 pinned in
-  `tools/build_timestamps.py`). All 6,236 ayahs present. Word indices are relative to the ayah's own words
-  with the Basmala prefix excluded, the same convention as `qari.text`, so no remapping is needed.
-- **Measured defects in the source** and what the converter does (all flagged, nothing silent):
-  55 words from 23 merged segments (split by character weight), 32 interpolated words (11 missing + 21
-  segments with end <= start), 5 open-ended trailing words (end_ms null = play to end of file), 2 suspect
-  ayahs whose segments run past the ayah's word count (10:1, 13:1).
-  After conversion: 3 zero-width words and 1 10 ms overlap remain, 27 gaps over 500 ms. Coverage 77,433/77,433 words.
-- **Audio agreement check** (real EveryAyah files, 60 random ayahs): file length minus last word end was
-  245-1184 ms (median 439 ms), never negative, so the alignment and the files are consistent.
-  This does not prove each word boundary is right: use the clip tool and listen.
-- **Not built, with reasons:** the Quran Foundation API source (needs credentials and the response format
-  could not be confirmed: the documented segments endpoint returned 404 for the URL I could reach) and the
-  CTC forced-alignment fallback (needs torch plus audio we have rights to; not needed for Afasy). Both stay
-  behind the `timestamps_source` field in the reciter registry.
-- Generated files `data/timestamps/` and `data/cache/` are gitignored: the timing data's license is clean
-  (CC BY 4.0, credit recorded in the file) but it is only useful with audio whose rights are unconfirmed.
+  `tools/build_timestamps.py`). All 6,236 ayahs present, word indices relative to the ayah's own words.
+- **The source and Tanzil disagree on the words of 10:1 and 13:1** (source has one more word). An earlier
+  version of this section said "no remapping needed"; that was wrong for these two ayahs and played the
+  wrong word. They are now `suspect`: whole-ayah playback only, partial ranges come back `unreliable`.
+- **Other source defects** and the policy (nothing silent; every non-clean word is flagged and each returned
+  `Segment` carries `quality` = exact | approx | unreliable and `ends_ayah`):
+  merged segments (split by character weight), 11 missing words, 21 segments with end <= start or time going
+  backwards (treated as missing). A missing word is cut from the neighbour span with the higher ms per
+  character unless the gap between neighbours can hold it (>= 60 ms). Clean words are 77,302 of 77,433;
+  82 split, 29 interpolated, 20 in suspect ayahs; 31 words from the source are under 40 ms and make a
+  range `approx`.
+- **Audio agreement** (real EveryAyah files, 150 random ayahs): file length minus the last word's end was
+  42-2,841 ms, median 461 ms; 2 of 150 over 1.5 s (34:14, 39:18). A separate sample hit 6.2 s (58:22).
+  The aligned end can undershoot the file, so a range that ends on an ayah's last word is marked
+  `ends_ayah` and the API should pad more there. This does not prove every internal boundary is right:
+  listen to the clips from `tools.validate_timestamps --clips`.
+- **Not built, with reasons:** the Quran Foundation API source (needs credentials; the response format
+  could not be confirmed) and the CTC forced-alignment fallback (needs torch plus audio we have rights to).
+  Both stay behind `timestamps_source` in the reciter registry.
+- `data/timestamps/` and `data/cache/` are gitignored. The timing data is CC BY 4.0 with credit recorded in
+  the file, but it is only useful with audio whose rights are unconfirmed.
+
+## M3 results (2026-10-13)
+
+Synthetic queries from Tanzil text (5 kinds x 6 damage levels), 4 seeds, 2,400 queries each, CPU only.
+Damage = dropped word, ASR-style character confusion, inserted word, isti'adha/Basmala prefix.
+`python -m tools.eval_matcher --per-cell 80 --seed N`.
+
+| metric | result (range over seeds) |
+|---|---|
+| top-1 within +-1 word of the truth | 93.2 - 93.7% |
+| exact start and end | 87.6 - 87.9% |
+| `matched` but wrong place (range off by >1 word or different text) | 0.33 - 0.71% (8 - 17 of 2,400) |
+| `ambiguous` (truth among the alternatives in ~95% of them) | 5.2 - 5.8% |
+| `not_found` | 0.6 - 0.7% |
+| match latency, CPU | p50 0.9 ms, p95 ~40 ms |
+
+Confidence threshold trade-off (seed 4, from the eval's own table):
+
+| auto-play if confidence >= | played | wrong among played |
+|---|---|---|
+| 0.0 | 94.4% | 0.66% |
+| 0.8 | 90.9% | 0.32% |
+| 0.9 | 84.8% | 0.05% |
+
+**Recommendation:** auto-play only at confidence >= 0.9 until real ASR output exists, and show a picker
+below that. The numbers are for synthetic damage; real ASR errors are not uniform character noise, so they
+bound the matcher's logic and must be re-measured in sub-project 2.
+
+What the "wrong" cases are: nearly all are a range shortened by 1-4 words at an edge after a dropped plus
+damaged word. Some are inherent: a damaged recitation that equals another verse's text exactly
+(`قل كفى بالله بيني` is the start of both 17:96 and 29:52).
+
+Design decisions the numbers drove:
+- Candidate search votes with bigrams and trigrams together (trigram = 2 votes). Trigram-only search made
+  short damaged verses unfindable (up to 20% `not_found` on full verses with one damaged word).
+- A Basmala does **not** restrict matching to surah starts (isti'adha + Basmala + ayat al-kursi is common);
+  anchoring is only used to accept short input after a Basmala. The first version anchored and matched
+  0 of 240 prefixed queries.
+- 25 candidate diagonals, not 10: common phrases tie on votes and the true place was cut by tie order.
+- Edge words are adopted as substitutions only if similar (>= 0.4) to the Quran word they would replace:
+  without the floor, an inserted junk word widened the range (exact 85% vs 88%).
+- Session prior breaks ties only among candidates already within the ambiguity margin; it never overrides
+  text.
+- Matching key is the normalized word with alefs removed, because Uthmani and simple script disagree on
+  alefs (M1 finding).

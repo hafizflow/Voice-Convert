@@ -113,3 +113,8 @@ timestamp source, license status). Afasy timings come from quran-align (CC BY 4.
 
     .venv/bin/python -m tools.build_timestamps --reciter afasy        # -> data/timestamps/afasy.json
     .venv/bin/python -m tools.validate_timestamps --durations 40 --clips 5   # stats, audio check, clips in work/qari_clips
+
+Matcher (M3): `qari.match.Matcher(WordIndex.from_file()).match(text, asr_confidence, session)` returns
+`matched | ambiguous | not_found | too_short` with the word range, per-word ops and alternatives.
+
+    .venv/bin/python -m tools.eval_matcher --per-cell 80 --seed 1    # synthetic accuracy + confidence table
