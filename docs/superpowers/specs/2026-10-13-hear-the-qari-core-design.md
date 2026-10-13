@@ -105,8 +105,8 @@ ayah file touched. Padding is applied there (API phase, configurable).
 ### Normalizer
 
 One pure function applied to both sides. Strips harakat, tatweel, Quranic annotation marks and the small
-Uthmani letters-as-marks; folds alef forms (أ إ آ ٱ → ا), ى→ي, ة→ه, hamza carriers (ؤ ئ → و ي, bare ء kept
-as its own letter). The rule list and each folding is covered by a table-driven test that includes the
+Uthmani letters-as-marks; folds alef forms (أ إ آ ٱ → ا), ى→ي, ة→ه, hamza carriers (ؤ ئ → و ي; bare ء kept as its own letter,
+except ء+ا, which is alef-madda and folds to ا; dagger alef becomes an explicit ا except after ى). The rule list and each folding is covered by a table-driven test that includes the
 tricky cases (dagger alef, alef wasla, small waw/yeh, maddah, ending ـٰ). Folding decisions that lose
 information are listed in the test file so they are visible.
 
@@ -193,3 +193,14 @@ a source needs it.
 
 2. ASR service (checkpoint eval, faster-whisper, calibration of confidence) ·
 3. API (WS/HTTP, padding, auth, metrics) · 4. Flutter package · 5. Deployment.
+
+## M1 findings carried to M3
+
+- Measured on 70,798 word pairs where Uthmani and simple-clean have the same word count, the normalized
+  forms are equal for ~95.8% (before the final yeh fix; the final-review run measured ~4.2% mismatches).
+  Top mismatches are words where simple script omits the alef Uthmani marks (ذلك, هذا, الرحمن, ولكن,
+  اولئك, الصلاة), the small yeh in إبراهيم, and `شيئا`. An exact 3-gram lookup therefore loses roughly 12%
+  of 3-grams: M3 must either add an exceptions table for the top words or index a looser key (e.g. medial
+  alef stripped) and rescore with the strict one.
+- Folds that lose information (listed here because the spec requires them to be visible): tatweel+hamza
+  (`يَسْـَٔلُونَكَ` -> `يسلونك`, ASR `يسألونك` -> `يسالونك`) and the small yeh (`إِبْرَٰهِـۧمَ`).

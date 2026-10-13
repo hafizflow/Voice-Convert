@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from qari.text.tanzil import build_words, parse_tanzil
+from qari.text.tanzil import build_words, check_complete, parse_tanzil
 
 FIXTURE = Path(__file__).parent / "fixtures" / "tanzil_sample.txt"
 
@@ -64,4 +64,24 @@ def test_crlf_and_bom_are_tolerated():
 def test_word_that_normalizes_to_nothing_is_an_error():
     rows = [(1, 1, "بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ"), (1, 2, "َ")]
     with pytest.raises(ValueError, match="normalizes to nothing"):
+        build_words(rows)
+
+
+def test_check_complete_rejects_missing_surahs():
+    # the sample has surahs 1, 2, 9, 95, 97 only
+    words = build_words(parse_tanzil(FIXTURE.read_text(encoding="utf-8")))
+    with pytest.raises(ValueError, match="114"):
+        check_complete(words)
+
+
+def test_check_complete_rejects_truncated_surah():
+    rows = parse_tanzil(FIXTURE.read_text(encoding="utf-8"))
+    rows = [r for r in rows if r[:2] != (1, 7)]
+    with pytest.raises(ValueError):
+        check_complete(build_words(rows))
+
+
+def test_ayah_that_is_only_the_basmala_is_an_error():
+    rows = [(1, 1, "بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ"), (2, 1, "بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ")]
+    with pytest.raises(ValueError, match="2:1"):
         build_words(rows)

@@ -47,9 +47,25 @@ def build_words(rows: list[tuple[int, int, str]]) -> tuple[Word, ...]:
             if [normalize(t) for t in tokens[:BASMALA_WORDS]] != basmala_norm:
                 raise ValueError(f"{surah}:1 does not start with the Basmala")
             tokens = tokens[BASMALA_WORDS:]
+            if not tokens:
+                raise ValueError(f"{surah}:1 is only the Basmala")
         for pos, tok in enumerate(tokens, start=1):
             norm = normalize(tok)
             if not norm:
                 raise ValueError(f"{surah}:{ayah} word {pos} normalizes to nothing")
             words.append(Word(len(words), surah, ayah, pos, tok, norm))
     return tuple(words)
+
+
+SURAH_COUNT = 114
+AYAH_COUNT = 6236
+
+
+def check_complete(words: tuple[Word, ...]) -> None:
+    """Raise unless `words` is the whole Quran: surahs 1..114 and 6,236 ayahs."""
+    surahs = sorted({w.surah for w in words})
+    if surahs != list(range(1, SURAH_COUNT + 1)):
+        raise ValueError(f"expected surahs 1..{SURAH_COUNT}, got {len(surahs)} surahs")
+    ayahs = len({(w.surah, w.ayah) for w in words})
+    if ayahs != AYAH_COUNT:
+        raise ValueError(f"expected {AYAH_COUNT} ayahs, got {ayahs}")

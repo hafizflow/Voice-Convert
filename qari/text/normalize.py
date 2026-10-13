@@ -23,15 +23,18 @@ _DAGGER = 0x0670
 
 def normalize(text: str) -> str:
     out: list[str] = []
+    prev = ""  # last kept raw character, before folding
     for ch in unicodedata.normalize("NFKC", text):
         o = ord(ch)
         if o == _DAGGER:
-            # Explicit alef in the simple script (مالك, العالمين), except after ي (على, إلى).
-            if not (out and out[-1] == "ي"):
+            # Explicit alef in the simple script (مالك, العالمين), except after alef
+            # maqsura (على, إلى). After a real yeh it stays: القيامة, يا قوم.
+            if prev != "ى":
                 out.append("ا")
             continue
         if o in _DROP:
             continue
+        prev = ch
         ch = _FOLD.get(ch, ch)
         out.append(ch if "ء" <= ch <= "ي" else " ")
     # Uthmani writes alef-madda as hamza + alef (ءامنوا); the simple script writes آمنوا.

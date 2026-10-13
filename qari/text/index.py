@@ -30,8 +30,10 @@ class WordIndex:
 
     @classmethod
     def from_file(cls, path: Path = DEFAULT_TANZIL) -> "WordIndex":
-        from qari.text.tanzil import build_words, parse_tanzil
-        return cls(build_words(parse_tanzil(Path(path).read_text(encoding="utf-8"))))
+        from qari.text.tanzil import build_words, check_complete, parse_tanzil
+        words = build_words(parse_tanzil(Path(path).read_text(encoding="utf-8")))
+        check_complete(words)
+        return cls(words)
 
     def __len__(self) -> int:
         return len(self.words)

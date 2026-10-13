@@ -34,3 +34,13 @@ def test_idempotent():
 
 def test_normalize_words_splits_on_normalized_spaces():
     assert normalize_words("ٱلْحَمْدُ  لِلَّهِ،رَبِّ") == ["الحمد", "لله", "رب"]
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("يَٰقَوْمِ", "ياقوم"),        # vocative: must not collide with يقوم
+    ("ٱلْقِيَٰمَةِ", "القيامه"),   # dagger after a real yeh stays an alef
+    ("عَلَىٰ", "علي"),             # after alef maqsura it is still dropped
+    ("إِلَىٰ", "الي"),
+])
+def test_dagger_alef_dropped_only_after_alef_maqsura(text, expected):
+    assert normalize(text) == expected
