@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice Convert Test</title>
+<style>
+  :root { --bg:#0f1115; --fg:#e8e8e8; --muted:#8a8f98; --card:#1a1d24; --line:#2a2e37;
+          --accent:#4ade80; --warn:#fbbf24; --bad:#f87171; }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f6f7f9; --fg:#15171c; --muted:#5b616b; --card:#fff; --line:#d9dce2;
+            --accent:#15803d; --warn:#b45309; --bad:#b91c1c; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, sans-serif; }
+  main { max-width:560px; margin:0 auto; padding:16px; }
+  h1 { font-size:18px; margin:8px 0 12px; }
+  .banner { background:var(--card); border:1px solid var(--warn); color:var(--warn);
+            border-radius:8px; padding:8px 12px; margin-bottom:12px; font-size:13px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px;
+          padding:14px; margin-bottom:12px; }
+  label { display:block; font-size:13px; color:var(--muted); margin:8px 0 2px; }
+  input[type=text], input[type=password], select { width:100%; padding:8px; border-radius:6px;
+          border:1px solid var(--line); background:var(--bg); color:var(--fg); font:inherit; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  button { padding:10px 14px; border-radius:8px; border:1px solid var(--line);
+           background:var(--card); color:var(--fg); font:inherit; cursor:pointer; }
+  button.primary { background:var(--accent); color:#06210f; border-color:var(--accent); font-weight:600; }
+  button:disabled { opacity:.45; cursor:default; }
+  .check { display:flex; gap:8px; align-items:center; margin:6px 0; font-size:14px; }
+  .check label { margin:0; color:inherit; font-size:14px; }
+  .meter { height:10px; background:var(--bg); border:1px solid var(--line); border-radius:5px; overflow:hidden; }
+  .meter > div { height:100%; width:0; background:var(--accent); }
+  dl { display:grid; grid-template-columns:auto 1fr; gap:4px 12px; margin:0; font-size:14px; }
+  dt { color:var(--muted); } dd { margin:0; font-variant-numeric:tabular-nums; }
+  #status { font-size:14px; min-height:20px; margin-top:8px; }
+  .bad { color:var(--bad); } .ok { color:var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Real-time voice conversion (test)</h1>
+  <div class="banner"><strong>AI practice voice.</strong> This is not a real recitation by the reciter.
+    Converted audio plays only to you and is never recorded or saved.</div>
+
+  <div class="card">
+    <label for="apikey">App API key</label>
+    <input id="apikey" type="password" autocomplete="off" placeholder="dev-app-key">
+    <label for="voice">Voice</label>
+    <select id="voice"></select>
+    <div class="check"><input id="headphones" type="checkbox"><label for="headphones">
+      I am wearing headphones (otherwise echo cancellation is turned on and quality drops)</label></div>
+    <details><summary>Audio processing</summary>
+      <div class="check"><input id="aec" type="checkbox" checked><label for="aec">Echo cancellation</label></div>
+      <div class="check"><input id="ns" type="checkbox"><label for="ns">Noise suppression (can distort recitation)</label></div>
+      <div class="check"><input id="agc" type="checkbox"><label for="agc">Auto gain control (can distort recitation)</label></div>
+    </details>
+    <div class="row" style="margin-top:12px">
+      <button id="start" class="primary">Start</button>
+      <button id="test">Latency test</button>
+      <button id="stop" disabled>Stop</button>
+    </div>
+    <div id="status"></div>
+  </div>
+
+  <div class="card">
+    <label>Input level (your mic)</label><div class="meter"><div id="inMeter"></div></div>
+    <label>Output level (converted voice)</label><div class="meter"><div id="outMeter"></div></div>
+  </div>
+
+  <div class="card">
+    <dl>
+      <dt>Server inference</dt><dd id="sInf">-</dd>
+      <dt>Receive jitter buffer</dt><dd id="sJit">-</dd>
+      <dt>Test signal round trip</dt><dd id="sRtt">-</dd>
+      <dt>Round-trip history</dt><dd id="sHist">-</dd>
+    </dl>
+    <p style="font-size:12px;color:var(--muted);margin:8px 0 0">
+      The latency test sends a tone burst instead of your mic and times its return. It covers
+      encode, network, server and decode, and excludes mic and speaker hardware (add roughly 20 to 60 ms).</p>
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.5.7/dist/livekit-client.umd.min.js"></script>
+<script>
+const LK = LivekitClient;
+const $ = (id) => document.getElementById(id);
+let room = null, ctx = null, timers = [], elements = [], pendingClick = null, rtts = [];
+
+function setStatus(text, cls = '') { const s = $('status'); s.textContent = text; s.className = cls; }
+
+function syncToggles() {
+  const hp = $('headphones').checked;
+  $('aec').checked = !hp;
+  $('ns').checked = false;
+  $('agc').checked = false;
+}
+$('headphones').addEventListener('change', syncToggles);
+
+async function loadVoices() {
+  const voices = await (await fetch('/voices')).json();
+  const sel = $('voice');
+  for (const v of voices) {
+    const o = document.createElement('option');
+    o.value = v.id; o.textContent = v.name; sel.append(o);
+  }
+}
+
+function meter(sourceNode, barId) {
+  const an = ctx.createAnalyser();
+  an.fftSize = 512;
+  sourceNode.connect(an);
+  const buf = new Float32Array(an.fftSize);
+  const bar = $(barId);
+  const active = ctx;
+  (function tick() {
+    if (active !== ctx || !room) { bar.style.width = '0'; return; }
+    an.getFloatTimeDomainData(buf);
+    let s = 0; for (const v of buf) s += v * v;
+    bar.style.width = Math.min(100, Math.round(Math.sqrt(s / buf.length) * 400)) + '%';
+    requestAnimationFrame(tick);
+  })();
+}
+
+async function setupDetector(src) {
+  const code = `class D extends AudioWorkletProcessor{process(i){const c=i[0][0];if(c){let m=0;
+    for(let k=0;k<c.length;k++){const a=Math.abs(c[k]);if(a>m)m=a}
+    if(m>0.1)this.port.postMessage(currentTime)}return true}}registerProcessor('d',D)`;
+  const url = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
+  await ctx.audioWorklet.addModule(url);
+  const node = new AudioWorkletNode(ctx, 'd');
+  node.port.onmessage = (e) => {
+    if (pendingClick === null) return;
+    const ms = (e.data - pendingClick) * 1000;
+    pendingClick = null;
+    if (ms > 0) {
+      rtts.push(ms); rtts = rtts.slice(-20);
+      const sorted = [...rtts].sort((a, b) => a - b);
+      $('sRtt').textContent = `${ms.toFixed(0)} ms (median ${sorted[Math.floor(sorted.length / 2)].toFixed(0)})`;
+      $('sHist').textContent = rtts.map((x) => x.toFixed(0)).join(', ');
+    }
+  };
+  const sink = ctx.createGain(); sink.gain.value = 0;
+  src.connect(node); node.connect(sink).connect(ctx.destination);
+}
+
+function onTrack(track) {
+  if (track.kind !== 'audio') return;
+  const el = track.attach();   // plays the converted track; no record/save controls exist
+  el.style.display = 'none';
+  document.body.append(el); elements.push(el);
+  const src = ctx.createMediaStreamSource(new MediaStream([track.mediaStreamTrack]));
+  meter(src, 'outMeter');
+  setupDetector(src);
+  timers.push(setInterval(async () => {
+    try {
+      const rep = await track.receiver.getStats();
+      rep.forEach((s) => {
+        if (s.type === 'inbound-rtp' && s.kind === 'audio' && s.jitterBufferEmittedCount) {
+          $('sJit').textContent = (s.jitterBufferDelay / s.jitterBufferEmittedCount * 1000).toFixed(0) + ' ms';
+        }
+      });
+    } catch (_) {}
+  }, 1000));
+}
+
+function onData(payload, _participant, _kind, topic) {
+  if (topic !== 'stats') return;
+  try {
+    const s = JSON.parse(new TextDecoder().decode(payload));
+    $('sInf').textContent = s.inference_ms.toFixed(2) + ' ms';
+  } catch (_) {}
+}
+
+async function publishTestSignal() {
+  const dest = ctx.createMediaStreamDestination();
+  const osc = ctx.createOscillator(); osc.frequency.value = 1000;
+  const g = ctx.createGain(); g.gain.value = 0;
+  osc.connect(g).connect(dest); osc.start();
+  const track = new LK.LocalAudioTrack(dest.stream.getAudioTracks()[0]);
+  await room.localParticipant.publishTrack(track, { source: LK.Track.Source.Microphone });
+  timers.push(setInterval(() => {
+    const t = ctx.currentTime + 0.05;
+    g.gain.setValueAtTime(0.5, t); g.gain.setValueAtTime(0, t + 0.02);
+    pendingClick = t;
+  }, 1500));
+}
+
+async function start(testMode) {
+  if (room) return;
+  setStatus('Requesting session…');
+  $('start').disabled = $('test').disabled = true;
+  try {
+    const res = await fetch('/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': $('apikey').value },
+      body: JSON.stringify({ voice_id: $('voice').value }),
+    });
+    if (!res.ok) throw new Error(`${res.status}: ${(await res.json()).detail || res.statusText}`);
+    const t = await res.json();
+    ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
+    await ctx.resume();
+    room = new LK.Room({
+      audioCaptureDefaults: {
+        echoCancellation: $('aec').checked, noiseSuppression: $('ns').checked,
+        autoGainControl: $('agc').checked, channelCount: 1,
+      },
+      adaptiveStream: false, dynacast: false,
+    });
+    room.on(LK.RoomEvent.TrackSubscribed, onTrack);
+    room.on(LK.RoomEvent.DataReceived, onData);
+    room.on(LK.RoomEvent.Disconnected, () => stop('Disconnected'));
+    await room.connect(t.url, t.token);
+    if (testMode) {
+      await publishTestSignal();
+    } else {
+      await room.localParticipant.setMicrophoneEnabled(true);
+      const pub = room.localParticipant.getTrackPublication(LK.Track.Source.Microphone);
+      meter(ctx.createMediaStreamSource(new MediaStream([pub.track.mediaStreamTrack])), 'inMeter');
+    }
+    $('stop').disabled = false;
+    setStatus(testMode ? 'Running latency test…' : 'Live. Speak now.', 'ok');
+  } catch (e) {
+    setStatus('Failed: ' + e.message, 'bad');
+    await stop();
+  }
+}
+
+async function stop(msg) {
+  timers.forEach(clearInterval); timers = [];
+  elements.forEach((e) => e.remove()); elements = [];
+  const r = room; room = null;
+  if (r) { try { await r.disconnect(); } catch (_) {} }
+  if (ctx) { try { await ctx.close(); } catch (_) {} ctx = null; }
+  pendingClick = null;
+  $('start').disabled = $('test').disabled = false;
+  $('stop').disabled = true;
+  if (msg) setStatus(msg);
+}
+
+$('start').addEventListener('click', () => {
+  if (!$('headphones').checked && !confirm('Without headphones the converted voice will feed back into the mic. Continue anyway?')) return;
+  start(false);
+});
+$('test').addEventListener('click', () => start(true));
+$('stop').addEventListener('click', () => stop('Stopped'));
+syncToggles();
+loadVoices().catch((e) => setStatus('Could not load voices: ' + e.message, 'bad'));
+</script>
+</body>
+</html>
