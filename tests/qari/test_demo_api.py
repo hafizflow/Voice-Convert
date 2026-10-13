@@ -32,12 +32,33 @@ def test_partial_range_has_padded_start_and_open_end_at_ayah_end(client):
 def test_phrase_shared_by_two_verses_is_ambiguous(client):
     # "الله لا اله الا هو الحي القيوم" opens both 2:255 and 3:2
     r = client.post("/api/match", json={"text": "الله لا اله الا هو الحي القيوم"}).json()
-    assert r["status"] == "ambiguous" and r["range"] is None
+    assert r["status"] == "ambiguous"
+    assert r["forced"]["reason"] == "ambiguous" and r["range"]["ref"].startswith("2:255")   # earliest of the tie
 
 
-def test_ambiguous_refrain_has_alternatives_and_no_range(client):
+def test_ambiguous_refrain_still_plays_the_best_guess_and_lists_the_rest(client):
     r = client.post("/api/match", json={"text": "فبأي آلاء ربكما تكذبان"}).json()
-    assert r["status"] == "ambiguous" and r["range"] is None and len(r["alternatives"]) >= 2
+    assert r["status"] == "ambiguous" and len(r["alternatives"]) >= 2
+    assert r["range"] is not None and r["play"]["segments"] and r["forced"]["candidates"] >= 2
+
+
+def test_best_guess_follows_the_session_forward(client):
+    from qari.text.index import WordIndex
+    idx = WordIndex.from_file()
+    end = idx.ayah_range(55, 15)[1]
+    r = client.post("/api/match", json={"text": "فبأي آلاء ربكما تكذبان", "last_end_gid": end}).json()
+    assert r["range"]["ref"].startswith("55:16")
+
+
+def test_too_short_input_plays_the_top_candidate(client):
+    r = client.post("/api/match", json={"text": "الحمد لله"}).json()
+    assert r["status"] == "too_short" and r["forced"]["reason"] == "too_short"
+    assert r["range"]["ref"].startswith("1:2")
+
+
+def test_gibberish_with_no_candidate_has_nothing_to_play(client):
+    r = client.post("/api/match", json={"text": "قطة تأكل سمكة كبيرة جدا"}).json()
+    assert r["range"] is None and "forced" not in r
 
 
 def test_play_endpoint_rejects_bad_range(client):

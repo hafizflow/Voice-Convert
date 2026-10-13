@@ -101,6 +101,19 @@ def describe(st: dict, r: MatchResult, pad_ms: int) -> dict:
     return out
 
 
+def best_guess(r: MatchResult, last_end_gid: int | None):
+    """When the matcher will not commit, choose what to play anyway: highest score; among equals the one
+    that continues forward from the previous verse; otherwise the earliest in the Quran."""
+    if not r.alternatives:
+        return None
+    nxt = (last_end_gid + 1) if last_end_gid is not None else None
+
+    def key(c):
+        forward = c.start_gid - nxt if nxt is not None and c.start_gid >= nxt - 3 else float("inf")
+        return (-round(c.score, 3), forward, c.start_gid)
+    return min(r.alternatives, key=key)
+
+
 @app.post("/api/match")
 def match(req: MatchRequest) -> dict:
     st = state()
@@ -109,6 +122,16 @@ def match(req: MatchRequest) -> dict:
     r = st["matcher"].match(req.text, req.asr_confidence, session)
     ms = (time.perf_counter() - t) * 1000
     out = describe(st, r, req.pad_ms)
+    if r.start_gid is None:
+        pick = best_guess(r, req.last_end_gid)
+        if pick is not None:
+            idx = st["idx"]
+            out["range"] = {"start_gid": pick.start_gid, "end_gid": pick.end_gid,
+                            "ref": _ref(idx, pick.start_gid, pick.end_gid),
+                            "text": idx.text(pick.start_gid, pick.end_gid)}
+            out["play"] = play_plan(st, pick.start_gid, pick.end_gid, r.includes_basmala, req.pad_ms)
+            out["forced"] = {"reason": r.status, "score": round(pick.score, 3),
+                             "candidates": len(r.alternatives)}
     out["timings_ms"] = {"match": round(ms, 1)}
     out["reciter"] = st["reciter"].display_name
     return out

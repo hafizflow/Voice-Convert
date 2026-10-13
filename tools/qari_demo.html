@@ -50,7 +50,7 @@
     <div class="row">
       <label>padding <input type="number" id="pad" value="100" min="0" max="500" step="10"> ms</label>
       <label>end of speech after <input type="number" id="silence" value="1000" min="500" max="4000" step="100"> ms of silence</label>
-      <label><input type="checkbox" id="lowconf" checked> play every match immediately (untick to require confidence &ge; 0.9)</label>
+      <label><input type="checkbox" id="lowconf" checked> always play the best guess (untick to play only confident matches)</label>
     </div>
     <div class="row samples meta">Try:
       <button data-t="قل هو الله احد الله الصمد">112:1-2</button>
@@ -78,8 +78,8 @@ async function api(path, body) {
 }
 
 function shouldPlay(res) {
-  // status "matched" already means one clear place; ambiguous results never auto-play (there is nothing to play)
-  return !!res.range && ($('#lowconf').checked || res.confidence >= 0.9);
+  // with "always play" on, a forced best guess (ambiguous / too short / weak) plays too
+  return !!res.range && ($('#lowconf').checked || (res.status === 'matched' && res.confidence >= 0.9));
 }
 
 async function find(text, asrConf = 1.0) {
@@ -107,17 +107,14 @@ function render(res) {
   const f = res.flags, on = Object.keys(f).filter(k => f[k]);
   if (on.length) h += `<div class="meta">${on.join(', ').replace(/_/g,' ')}</div>`;
   if (res.range) {
+    if (res.forced) h += `<div class="note">Best guess (${res.status.replace('_',' ')}, ${res.forced.candidates} candidate${res.forced.candidates>1?'s':''}): playing the highest-scoring one. Other candidates below.</div>`;
     h += `<h3 style="margin:10px 0 0">${res.range.ref}</h3>` + wordsHtml(res.play, res.mistakes);
     (res.play.notes||[]).forEach(n => h += `<div class="note">${n}</div>`);
     h += `<div class="row"><button class="primary" id="replay">Play</button><button id="stop">Stop</button></div>`;
     if (res.mistakes.length) h += `<div class="meta">Differences from the text: ` +
       res.mistakes.map(m => `${m.type} ${m.surah}:${m.ayah} word ${m.word}`).join('; ') + `</div>`;
-    if (res.confidence < 0.9) h += `<div class="note">Below the 0.9 auto-play gate: a real app would ask you to confirm.</div>`;
-  } else if (res.status === 'ambiguous') {
-    h += `<div class="note">Several places match equally well. Pick one:</div>`;
-  } else if (res.status === 'too_short') {
-    h += `<div class="note">Too short to play automatically. Possible places:</div>`;
-  } else { h += `<div class="note">Nothing in the Quran matched well enough.</div>`; }
+    if (!res.forced && res.confidence < 0.9) h += `<div class="note">Below the 0.9 gate: a real app would ask you to confirm.</div>`;
+  } else { h += `<div class="note">Nothing in the Quran resembled that: nothing to play.</div>`; }
   if (res.alternatives.length) {
     h += res.alternatives.map(a => `<div class="alt"><button data-s="${a.start_gid}" data-e="${a.end_gid}">Play</button>
       <div class="t">${a.text}</div><div class="meta">${a.ref}<br>score ${a.score}</div></div>`).join('');
