@@ -9,7 +9,10 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from qari.align.quran_align import AyahTimings, WordTiming
+import os
+from qari.align.quran_align import INTERPOLATED, SPLIT, AyahTimings, WordTiming
+
+TINY_MS = 40  # a word this short cannot be heard as itself; its source segment is not trusted
 from qari.reciters.registry import Reciter
 from qari.text.index import WordIndex
 
@@ -23,6 +26,14 @@ class Segment:
     ayah: int
     first_pos: int
     last_pos: int
+    # "exact": every word is a clean 1:1 source segment.
+    # "approx": some word was split or interpolated; its edges can be off by a fraction of a word, pad more.
+    # "unreliable": a partial range of an ayah whose source and Tanzil disagree on the words; do not play
+    #   it as a sub-range (the whole ayah is fine).
+    quality: str = "exact"
+    # True when the range ends on the ayah's last word. The aligned end can undershoot the file (measured
+    # tails of 0.25 to 6 s after the last word), so the API should pad more here, not cut at end_ms.
+    ends_ayah: bool = False
 
 
 class TimestampStore:
@@ -49,14 +60,20 @@ class TimestampStore:
     @classmethod
     def load(cls, path: Path, reciter: Reciter, index: WordIndex) -> "TimestampStore":
         d = json.loads(Path(path).read_text(encoding="utf-8"))
+        if d.get("reciter") != reciter.id:
+            raise ValueError(f"{path} is for reciter {d.get('reciter')!r}, not {reciter.id!r}")
         timings = {}
         for s, a in sorted({(w.surah, w.ayah) for w in index.words}):
             rows = d["ayahs"].get(f"{s}:{a}")
             if rows is None:
                 raise ValueError(f"timestamp file has no {s}:{a}")
+            if any(len(r) != 3 for r in rows):
+                raise ValueError(f"{s}:{a}: rows must be [start_ms, end_ms, flag]")
             timings[(s, a)] = AyahTimings([WordTiming(*r) for r in rows], False)
         suspect = {tuple(int(x) for x in k.split(":")) for k in d.get("suspect", [])}
         for k in suspect:
+            if k not in timings:
+                raise ValueError(f"suspect ayah {k[0]}:{k[1]} is not in the Quran")
             timings[k] = AyahTimings(timings[k].words, True)
         return cls.from_timings(reciter, index, timings, d.get("source", ""))
 
@@ -68,7 +85,10 @@ class TimestampStore:
         doc = {"reciter": self.reciter.id, "source": self.source,
                "attribution": self.reciter.license["timestamps"],
                "suspect": [f"{s}:{a}" for s, a in sorted(self._suspect)], "ayahs": ayahs}
-        Path(path).write_text(json.dumps(doc, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        path = Path(path)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(doc, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        os.replace(tmp, path)
 
     def word(self, gid: int) -> WordTiming:
         return self._words[gid]
@@ -78,14 +98,25 @@ class TimestampStore:
 
     def segments(self, start_gid: int, end_gid: int) -> list[Segment]:
         """One segment per ayah touched by the inclusive gid range."""
+        if not 0 <= start_gid <= end_gid < len(self.index):
+            raise ValueError(f"bad gid range {start_gid}..{end_gid} (0..{len(self.index) - 1})")
         out: list[Segment] = []
         gid = start_gid
         while gid <= end_gid:
             w = self.index[gid]
-            _, ayah_last = self.index.ayah_range(w.surah, w.ayah)
+            ayah_first, ayah_last = self.index.ayah_range(w.surah, w.ayah)
             last = min(end_gid, ayah_last)
-            out.append(Segment(self.reciter.audio_url(w.surah, w.ayah), self._words[gid].start_ms,
-                               self._words[last].end_ms, w.surah, w.ayah, w.pos, self.index[last].pos))
+            ws = self._words[gid:last + 1]
+            if (w.surah, w.ayah) in self._suspect:
+                whole = gid == ayah_first and last == ayah_last
+                start, end = ws[0].start_ms, None   # no trustworthy word edges: play to end of file
+                quality = "exact" if whole else "unreliable"
+            else:
+                start, end = ws[0].start_ms, ws[-1].end_ms
+                approx = any(x.flag in (SPLIT, INTERPOLATED) or x.end_ms - x.start_ms < TINY_MS for x in ws)
+                quality = "approx" if approx else "exact"
+            out.append(Segment(self.reciter.audio_url(w.surah, w.ayah), start, end, w.surah, w.ayah,
+                               w.pos, self.index[last].pos, quality, last == ayah_last))
             gid = last + 1
         return out
 

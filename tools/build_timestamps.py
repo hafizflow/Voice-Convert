@@ -27,10 +27,13 @@ def fetch_zip(cache: Path) -> Path:
     path = cache / "quran-align-data-2016-11-24.zip"
     if not path.exists():
         cache.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(httpx.get(ZIP_URL, timeout=120, follow_redirects=True).raise_for_status().content)
+        tmp = path.with_suffix(".part")
+        tmp.write_bytes(httpx.get(ZIP_URL, timeout=120, follow_redirects=True).raise_for_status().content)
+        tmp.replace(path)
     got = hashlib.sha256(path.read_bytes()).hexdigest()
     if got != ZIP_SHA256:
-        raise SystemExit(f"{path}: sha256 {got} != pinned {ZIP_SHA256}; refusing to use it")
+        raise SystemExit(f"{path}: sha256 {got} != pinned {ZIP_SHA256}; delete it and re-run, "
+                         "or the release asset changed and the pin needs a deliberate update")
     return path
 
 

@@ -8,28 +8,34 @@ from typing import Callable
 import numpy as np
 import soundfile as sf
 
-from qari.align.quran_align import INTERPOLATED, SPLIT
+from qari.align.quran_align import INTERPOLATED, SPLIT, SUSPECT
 from qari.align.store import TimestampStore
 
 Fetch = Callable[[str], tuple[np.ndarray, int]]
 GAP_MS = 500
+TINY_MS = 40   # a word shorter than this cannot be heard as itself
 
 
 def stats(store: TimestampStore) -> dict:
     idx = store.index
     s = {"words": len(idx), "non_positive": 0, "overlaps": 0, "open_ended": 0,
-         "gaps_over_500ms": 0, "suspect_ayahs": len(store._suspect),
-         "flags": {"ok": 0, "split": 0, "interpolated": 0}}
+         "gaps_over_500ms": 0, "suspect_ayahs": len(store._suspect), "tiny": 0,
+         "flags": {"ok": 0, "split": 0, "interpolated": 0, "suspect": 0}}
     for s_, a in sorted({(w.surah, w.ayah) for w in idx.words}):
         first, last = idx.ayah_range(s_, a)
         prev_end = None
         for g in range(first, last + 1):
             w = store.word(g)
-            s["flags"]["split" if w.flag == SPLIT else "interpolated" if w.flag == INTERPOLATED else "ok"] += 1
+            s["flags"]["split" if w.flag == SPLIT else "interpolated" if w.flag == INTERPOLATED
+                       else "suspect" if w.flag == SUSPECT else "ok"] += 1
+            if w.flag == SUSPECT:
+                continue   # no per-word times by design; whole-ayah playback only
             if w.end_ms is None:
                 s["open_ended"] += 1
             elif w.end_ms <= w.start_ms:
                 s["non_positive"] += 1
+            elif w.end_ms - w.start_ms < TINY_MS:
+                s["tiny"] += 1
             if prev_end is not None:
                 if w.start_ms < prev_end:
                     s["overlaps"] += 1
@@ -49,8 +55,14 @@ def fetch_audio(url: str) -> tuple[np.ndarray, int]:
     import io
 
     import httpx
-    r = httpx.get(url, timeout=30, follow_redirects=True)
-    r.raise_for_status()
+    for attempt in range(3):
+        try:
+            r = httpx.get(url, timeout=30, follow_redirects=True)
+            r.raise_for_status()
+            break
+        except httpx.HTTPError:
+            if attempt == 2:
+                raise
     data, sr = sf.read(io.BytesIO(r.content), dtype="float32")
     return (data.mean(axis=1) if data.ndim > 1 else data), sr
 

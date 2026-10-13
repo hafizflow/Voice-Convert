@@ -32,3 +32,38 @@ def test_registry_entry_missing_license_fields_is_rejected(tmp_path):
     (tmp_path / "bad.yaml").write_text("id: bad\ndisplay_name: Bad\n", encoding="utf-8")
     with pytest.raises(ValueError, match="bad"):
         load_reciter("bad", registry_dir=tmp_path)
+
+
+GOOD = """id: {id}
+display_name: X
+audio_url_template: "https://e.example/{{surah:03d}}{{ayah:03d}}.mp3"
+timestamps_source: quran-align
+timestamps_file: {tf}
+license:
+  audio: "a"
+  audio_status: {status}
+  timestamps: "t"
+"""
+
+
+@pytest.mark.parametrize("fname,kw,msg", [
+    ("husary", dict(id="afasy", tf="h.json", status="unconfirmed"), "does not match"),
+    ("h2", dict(id="h2", tf="../../etc/passwd", status="unconfirmed"), "relative path"),
+    ("h3", dict(id="h3", tf="h.json", status="confirmd"), "audio_status"),
+])
+def test_registry_rejects_bad_entries(tmp_path, fname, kw, msg):
+    (tmp_path / f"{fname}.yaml").write_text(GOOD.format(**kw), encoding="utf-8")
+    with pytest.raises(ValueError, match=msg):
+        load_reciter(fname, registry_dir=tmp_path)
+
+
+def test_template_without_ayah_is_rejected(tmp_path):
+    (tmp_path / "h.yaml").write_text(GOOD.format(id="h", tf="h.json", status="unconfirmed")
+                                     .replace("{ayah:03d}", ""), encoding="utf-8")
+    with pytest.raises(ValueError, match="needs"):
+        load_reciter("h", registry_dir=tmp_path)
+
+
+def test_path_traversal_in_reciter_id_is_unknown(tmp_path):
+    with pytest.raises(KeyError):
+        load_reciter("../x", registry_dir=tmp_path)

@@ -26,7 +26,7 @@ def test_clean_store_has_no_defects():
     s = stats(make_store())
     assert s["words"] == len(IDX)
     assert (s["non_positive"], s["overlaps"], s["open_ended"], s["suspect_ayahs"]) == (0, 0, 0, 0)
-    assert s["gaps_over_500ms"] == 0 and s["flags"] == {"ok": len(IDX), "split": 0, "interpolated": 0}
+    assert s["gaps_over_500ms"] == 0 and s["flags"] == {"ok": len(IDX), "split": 0, "interpolated": 0, "suspect": 0}
 
 
 def test_stats_find_injected_defects():

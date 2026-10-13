@@ -34,12 +34,18 @@ def main(argv=None) -> int:
     if args.list_defects:
         for g in range(len(idx)):
             w, t = idx[g], store.word(g)
-            if t.end_ms is None or t.end_ms <= t.start_ms or (g and idx[g - 1].ayah == w.ayah and t.start_ms < (store.word(g - 1).end_ms or 0)):
+            prev = g and idx[g - 1].surah == w.surah and idx[g - 1].ayah == w.ayah
+            if t.flag == 3:
+                if w.pos == 1:
+                    print(f"suspect ayah {w.surah}:{w.ayah} (whole-ayah playback only)")
+            elif (t.end_ms is None or t.end_ms - t.start_ms < 40
+                  or (prev and t.start_ms < (store.word(g - 1).end_ms or 0))):
                 print(f"defect {w.surah}:{w.ayah} word {w.pos} {t}")
     if args.durations:
         rows = check_durations(store, args.durations, args.seed)
         tails = sorted(r["tail_ms"] for r in rows if r["tail_ms"] is not None)
-        print(f"durations: n={len(rows)} tail_ms min={tails[0]} median={tails[len(tails)//2]} max={tails[-1]}")
+        if tails:
+            print(f"durations: n={len(rows)} tail_ms min={tails[0]} median={tails[len(tails)//2]} max={tails[-1]}")
         for r in rows:
             if r["tail_ms"] is None or r["tail_ms"] < 0 or r["tail_ms"] > 1500:
                 print("  check", r)

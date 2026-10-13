@@ -1,6 +1,7 @@
 """Reciter registry: one YAML file per reciter in registry/. Adding a Qari needs no code change."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,7 +25,13 @@ class Reciter:
         return self.audio_url_template.format(surah=surah, ayah=ayah)
 
 
+AUDIO_STATUSES = frozenset({"confirmed", "unconfirmed", "denied"})
+_SAFE_ID = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+
 def load_reciter(reciter_id: str, registry_dir: Path = REGISTRY_DIR) -> Reciter:
+    if not _SAFE_ID.match(reciter_id):
+        raise KeyError(f"unknown reciter: {reciter_id!r}")
     path = Path(registry_dir) / f"{reciter_id}.yaml"
     if not path.exists():
         raise KeyError(f"unknown reciter: {reciter_id}")
@@ -34,6 +41,20 @@ def load_reciter(reciter_id: str, registry_dir: Path = REGISTRY_DIR) -> Reciter:
     missing += [f"license.{k}" for k in _REQUIRED_LICENSE if k not in lic]
     if missing:
         raise ValueError(f"reciter {reciter_id}: missing {', '.join(missing)}")
+    problems = []
+    if raw["id"] != reciter_id:
+        problems.append(f"id {raw['id']!r} does not match file name")
+    if "{surah" not in raw["audio_url_template"] or "{ayah" not in raw["audio_url_template"]:
+        problems.append("audio_url_template needs {surah} and {ayah}")
+    if lic["audio_status"] not in AUDIO_STATUSES:
+        problems.append(f"license.audio_status must be one of {sorted(AUDIO_STATUSES)}")
+    if not all(isinstance(lic[k], str) and lic[k].strip() for k in _REQUIRED_LICENSE):
+        problems.append("license values must be non-empty strings")
+    tf = Path(raw["timestamps_file"])
+    if tf.is_absolute() or ".." in tf.parts:
+        problems.append("timestamps_file must be a plain relative path")
+    if problems:
+        raise ValueError(f"reciter {reciter_id}: " + "; ".join(problems))
     return Reciter(**{k: raw[k] for k in _REQUIRED})
 
 
