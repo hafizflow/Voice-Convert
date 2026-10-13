@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+livekit
+livekit-api
+prometheus-client
+pyyaml
+numpy
+httpx

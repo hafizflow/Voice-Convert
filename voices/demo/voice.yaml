@@ -1,0 +1,3 @@
+name: Demo (pass-through)
+f0_median_hz: 120
+consent_source: "Placeholder voice for pipeline testing; no real voice, no model."

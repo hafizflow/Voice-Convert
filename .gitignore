@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.pytest_cache/
+.DS_Store
+.superpowers/
+voices/*/model.pth
+voices/*/*.index

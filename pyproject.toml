@@ -1,0 +1,4 @@
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "auto"
+markers = ["integration: needs a running LiveKit server, worker and token server (VC_INTEGRATION=1)"]
