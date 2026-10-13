@@ -1,0 +1,16 @@
+# Linux hosts only: network_mode host does not work on Docker Desktop for Mac.
+# On a Mac, run livekit-server via `brew install livekit` (see README).
+services:
+  livekit:
+    image: livekit/livekit-server:latest
+    command: --dev --bind 0.0.0.0
+    network_mode: host
+  worker:
+    build: { context: ., dockerfile: docker/Dockerfile }
+    network_mode: host
+    env_file: .env
+  token:
+    build: { context: ., dockerfile: docker/Dockerfile }
+    command: ["uvicorn", "server.token_server:build_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    network_mode: host
+    env_file: .env
