@@ -22,7 +22,7 @@ class MatcherConfig:
     top_n: int = 25                    # diagonals tried (ties on common phrases need room)
     slack: int = 5                     # extra Quran words either side of the query in the window
     gap: float = -0.7
-    ambiguity_margin: float = 0.05     # normalized score within which another place counts as a tie
+    ambiguity_margin: float = 0.10     # a second place within this normalized score makes the answer a tie
     min_score: float = 0.45            # normalized score below which nothing is returned
     session_window: int = 150          # words: max distance for the session prior to break a tie
     max_alternatives: int = 8
@@ -30,6 +30,8 @@ class MatcherConfig:
     edge_min_sim: float = 0.4          # ...but only if they resemble the Quran word they would replace
     vote_floor: float = 0.3            # skip diagonals with under this fraction of the best vote
     max_postings: int = 400
+    max_words: int = 300               # longer input is truncated (cost is quadratic)
+    dp_budget: int = 3000              # candidates tried ~ dp_budget / query length (floor 3)
 
 
 @dataclass
@@ -63,6 +65,8 @@ class MatchResult:
     istiadha_stripped: bool = False
     internal_basmala: bool = False
     used_session: bool = False
+    vocative_joined: bool = False      # a split يا + word was read as the Quran's single word
+    truncated: bool = False
 
 
 class Matcher:
@@ -70,67 +74,111 @@ class Matcher:
         self.index = index
         self.cfg = config or MatcherConfig()
         self.ngrams = NgramIndex(index, self.cfg.max_postings)
-        self._surah_starts = [index.surah_range(s)[0] for s in sorted({w.surah for w in index.words})]
+        starts = {s: index.surah_range(s)[0] for s in sorted({w.surah for w in index.words})}
+        starts[1] = index.gid(1, 2, 1)     # after a spoken Basmala, Al-Fatiha continues at ayah 2
+        self._surah_starts = list(starts.values())
+        self._surah_start_set = set(self._surah_starts)
 
     # ---- public -------------------------------------------------------------------------------
     def match(self, text: str | list[str], asr_confidence: float = 1.0,
               session: SessionContext | None = None) -> MatchResult:
+        asr = asr_confidence if asr_confidence == asr_confidence else 0.0   # NaN -> 0
+        asr = min(1.0, max(0.0, asr))
         words = normalize_words(text) if isinstance(text, str) else [w for t in text for w in normalize_words(t)]
         q = [skeleton(w) for w in words]
         q, istiadha = strip_istiadha(q)
-        q, basmala, internal = strip_basmala(q)
-        base = dict(istiadha_stripped=istiadha, internal_basmala=internal, n_words=len(q))
-
+        q, basmala, without_internal = strip_basmala(q)
+        truncated = len(q) > self.cfg.max_words
+        if truncated:
+            q = q[:self.cfg.max_words]
+            without_internal = None if without_internal is None else without_internal[:self.cfg.max_words]
         if not q:
             if basmala:   # the Basmala on its own: play it
                 first, last = self.index.ayah_range(1, 1)
-                return MatchResult("matched", first, last, False, 1.0, asr_confidence,
-                                   {"asr": asr_confidence, "basmala_only": 1.0}, **base)
+                return MatchResult("matched", first, last, False, 1.0, asr,
+                                   {"asr": asr, "basmala_only": 1.0}, istiadha_stripped=istiadha)
+            return MatchResult("not_found", istiadha_stripped=istiadha)
+
+        # Readings of the same recitation, each resolved on its own; the best explained one wins.
+        readings: list[tuple[list[str], bool, bool]] = []
+        for words_, internal in ((q, False), (without_internal, True)):
+            if words_ is None:
+                continue
+            readings.append((words_, internal, False))
+            joined = self._join_vocatives(words_)
+            if joined != words_:
+                readings.append((joined, internal, True))
+        results = []
+        for words_, internal, vocative in readings:
+            r = self._resolve(words_, basmala, asr, session)
+            r.istiadha_stripped, r.internal_basmala, r.vocative_joined, r.truncated = istiadha, internal, vocative, truncated
+            results.append(r)
+        rank = {"matched": 3, "ambiguous": 2, "too_short": 1, "not_found": 0}
+        return max(results, key=lambda r: (rank[r.status], r.score * r.n_words, -results.index(r)))
+
+    # ---- internals ----------------------------------------------------------------------------
+    @staticmethod
+    def _join_vocatives(q: list[str]) -> list[str]:
+        """Simple-script ASR writes يا أيها; the Uthmani text has one word (يَٰٓأَيُّهَا). Join them."""
+        out, i = [], 0
+        while i < len(q):
+            if q[i] in ("ي", "وي") and i + 1 < len(q):
+                out.append(q[i] + q[i + 1])
+                i += 2
+            else:
+                out.append(q[i])
+                i += 1
+        return out
+
+    def _resolve(self, q: list[str], basmala: bool, asr: float, session: SessionContext | None) -> MatchResult:
+        base = dict(n_words=len(q), includes_basmala=basmala)
+        if not q:
             return MatchResult("not_found", **base)
-
-        # After a Basmala the reciter usually starts a surah, but not always (isti'adha + Basmala + ayat
-        # al-kursi is common). Anchoring is therefore only a way to accept short input, never a filter.
-        anchored = basmala and len(q) < self.cfg.min_words
-        need = self.cfg.min_words_anchored if basmala else self.cfg.min_words
-        cands = self._candidates(q, anchored)
-        if basmala and not anchored:
-            cands += self._anchored_candidates(q)
-        if len(q) < need:
-            return MatchResult("too_short", alternatives=self._rank(cands)[:self.cfg.max_alternatives], **base)
-
+        cands = self._candidates(q)
+        if basmala:
+            cands += self._anchored_candidates(q)   # a Basmala usually means a surah start: a hint, not a filter
         ranked = self._rank(cands)
+        need = self.cfg.min_words_anchored if basmala else self.cfg.min_words
+        if len(q) < need:
+            return MatchResult("too_short", alternatives=ranked[:self.cfg.max_alternatives], **base)
         if not ranked or ranked[0].score < self.cfg.min_score:
             return MatchResult("not_found", alternatives=ranked[:3], **base)
 
         top = ranked[0]
         tied = [c for c in ranked if c.score >= top.score - self.cfg.ambiguity_margin]
-        used_session = False
+        used_session, uniqueness = False, 1.0
         if len(tied) > 1:
             chosen = self._session_pick(tied, session)
+            if chosen is None and basmala:
+                # identical wording in several places and the reciter said the Basmala: take the one
+                # that starts a surah, if exactly one does
+                anchored = [c for c in tied if c.start_gid in self._surah_start_set]
+                if len(anchored) == 1:
+                    top, uniqueness = anchored[0], 0.8
+                    chosen = (top, False)
             if chosen is None:
                 alts = sorted(tied, key=lambda c: (-c.score, c.start_gid))[:self.cfg.max_alternatives]
-                return MatchResult("ambiguous", score=top.score, alternatives=alts,
-                                   includes_basmala=basmala, **base)
-            top, used_session = chosen, True
+                return MatchResult("ambiguous", score=top.score, alternatives=alts, **base)
+            top, used_session = chosen
+            if used_session:
+                uniqueness = 0.9 if abs(top.start_gid - (session.last_end_gid + 1)) <= 3 else 0.75
+        start, end, _, includes = self._finish(top, basmala)
+        aligned = sum(o.kind in ("match", "substitution") for o in top.ops)
+        missing = sum(o.kind == "missing" for o in top.ops)
+        parts = {"asr": asr, "coverage": top.coverage, "mean_sim": top.mean_sim, "uniqueness": uniqueness,
+                 "completeness": aligned / max(1, aligned + missing)}
+        conf = asr * top.coverage * top.mean_sim * uniqueness * parts["completeness"]
+        return MatchResult("matched", start, end, score=top.score, confidence=conf, confidence_parts=parts,
+                           ops=top.ops, used_session=used_session, n_words=len(q), includes_basmala=includes)
 
-        second = next((c for c in ranked if c is not top), None)
-        margin = top.score - second.score if second else 1.0
-        start, end, ops, includes = self._finish(top, basmala)
-        parts = {"asr": asr_confidence, "coverage": top.coverage, "mean_sim": top.mean_sim,
-                 "uniqueness": min(1.0, margin / (self.cfg.ambiguity_margin * 4)) if not used_session else 0.75}
-        conf = asr_confidence * top.coverage * top.mean_sim * parts["uniqueness"]
-        return MatchResult("matched", start, end, includes, top.score, conf, parts, ops, [], used_session=used_session, **base)
-
-    # ---- internals ----------------------------------------------------------------------------
-    def _candidates(self, q: list[str], anchored: bool) -> list[Candidate]:
-        if anchored:
-            return self._anchored_candidates(q)
+    def _candidates(self, q: list[str]) -> list[Candidate]:
         tokens = self.ngrams.tokens(q)
         votes = self.ngrams.diagonals(tokens, 2)          # bigrams survive one damaged word in a short query
         for d, v in self.ngrams.diagonals(tokens, 3).items():
             votes[d] += 2 * v                              # a trigram hit is worth more than a bigram hit
+        top_n = min(self.cfg.top_n, max(3, self.cfg.dp_budget // max(1, len(q))))
         out = []
-        for d in self.ngrams.top_diagonals(votes, self.cfg.top_n, min_fraction=self.cfg.vote_floor):
+        for d in self.ngrams.top_diagonals(votes, top_n, min_fraction=self.cfg.vote_floor):
             c = self._align_window(q, d - self.cfg.slack, d + len(q) + self.cfg.slack)
             if c is not None:
                 out.append(c)
@@ -190,19 +238,18 @@ class Matcher:
                 kept.append(c)
         return kept
 
-    def _session_pick(self, tied: list[Candidate], session: SessionContext | None) -> Candidate | None:
-        """Among equally good places choose the one that continues from the previous match, if exactly
-        one is clearly nearest. Never overrides a textual difference: only candidates already tied."""
+    def _session_pick(self, tied: list[Candidate], session: SessionContext | None):
+        """Among equally good places choose the one that continues forward from the previous match, if it
+        is clearly the nearest. Only candidates already tied are considered, so text always wins."""
         if session is None or session.last_end_gid is None:
             return None
         nxt = session.last_end_gid + 1
-        near = sorted(((abs(c.start_gid - nxt), c) for c in tied), key=lambda t: t[0])
-        d0, best = near[0]
-        if d0 > self.cfg.session_window:
+        fwd = sorted(((c.start_gid - nxt, c) for c in tied if c.start_gid >= nxt - 3), key=lambda t: t[0])
+        if not fwd or fwd[0][0] > self.cfg.session_window:
             return None
-        if len(near) > 1 and near[1][0] == d0:
+        if len(fwd) > 1 and fwd[1][0] - fwd[0][0] < 3:
             return None
-        return best
+        return fwd[0][1], True
 
     def _finish(self, c: Candidate, basmala: bool):
         start, end, ops = c.start_gid, c.end_gid, c.ops

@@ -236,26 +236,39 @@ Synthetic queries from Tanzil text (5 kinds x 6 damage levels), 4 seeds, 2,400 q
 Damage = dropped word, ASR-style character confusion, inserted word, isti'adha/Basmala prefix.
 `python -m tools.eval_matcher --per-cell 80 --seed N`.
 
-| metric | result (range over seeds) |
+| metric (after the review fixes, 4 seeds) | result |
 |---|---|
-| top-1 within +-1 word of the truth | 93.2 - 93.7% |
-| exact start and end | 87.6 - 87.9% |
-| `matched` but wrong place (range off by >1 word or different text) | 0.33 - 0.71% (8 - 17 of 2,400) |
-| `ambiguous` (truth among the alternatives in ~95% of them) | 5.2 - 5.8% |
-| `not_found` | 0.6 - 0.7% |
-| match latency, CPU | p50 0.9 ms, p95 ~40 ms |
+| top-1 within +-1 word of what was said | 92.4 - 93.2% |
+| exact start and end | 92.1 - 93.0% |
+| `matched` but wrong (range off by >1 word or another place) | 0.29 - 0.54% (7 - 13 of 2,400) |
+| `ambiguous` (the truth is among the alternatives in ~97% of them) | 5.9 - 6.7% |
+| `not_found` | 0.5 - 0.8% |
+| match latency, CPU | p50 ~1 ms, p95 ~40 ms |
 
-Confidence threshold trade-off (seed 4, from the eval's own table):
+Confidence gate (the eval's own table; "wrong" = outside +-1 word, right words at another place counts
+as wrong):
 
-| auto-play if confidence >= | played | wrong among played |
+| auto-play if confidence >= | played (seeds 1-4) | wrong among played |
 |---|---|---|
-| 0.0 | 94.4% | 0.66% |
-| 0.8 | 90.9% | 0.32% |
-| 0.9 | 84.8% | 0.05% |
+| 0.0 | 92.7 - 93.5% | 0.31 - 0.58% |
+| 0.8 | 91.1 - 92.0% | 0.18 - 0.45% |
+| 0.9 | 76.6 - 78.6% | 0.05 - 0.16% |
 
-**Recommendation:** auto-play only at confidence >= 0.9 until real ASR output exists, and show a picker
-below that. The numbers are for synthetic damage; real ASR errors are not uniform character noise, so they
-bound the matcher's logic and must be re-measured in sub-project 2.
+**Recommendation:** auto-play only at confidence >= 0.9 until real ASR output exists and show a picker
+below that: about 77% of recitations play immediately and about 1 in 1,000 of those is off. These numbers
+are for synthetic damage; real ASR errors are not uniform character noise, so they bound the matcher's
+logic and must be re-measured in sub-project 2. Note the eval never damages the isti'adha/Basmala prefix
+and builds queries from Quran tokens (so simple-script spelling quirks are only partly exercised).
+
+Review pass (fresh reviewer, 2026-10-13) found and I fixed, each with a test: a Basmala + two common words
+auto-playing a wrong verse at 1.0 (anchoring is now a hint merged into the general search; ties become
+`ambiguous`); an isti'adha missing a word eating verse words (strip now aligns to the pattern and strips
+through the last matching word); the internal-Basmala removal cutting real words of 27:30 (removal is now an
+alternative reading chosen only if it explains the recitation better); `matched` at margins barely above
+the tie margin (margin is now 0.10); Basmala + Al-Fatiha never resolving to ayah 2; the session prior being
+symmetric and able to replay the previous verse (now forward only); no cap on query length (300 words, then
+truncated); a split vocative `يا أيها` costing confidence everywhere (joined as an alternative reading).
+Left as is: a Basmala before surah 9 still sets `includes_basmala` (the user said it).
 
 What the "wrong" cases are: nearly all are a range shortened by 1-4 words at an edge after a dropped plus
 damaged word. Some are inherent: a damaged recitation that equals another verse's text exactly

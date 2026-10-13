@@ -12,11 +12,21 @@ def _positional_hits(words: list[str], pattern: list[str], threshold: float) -> 
 
 
 def strip_istiadha(words: list[str]) -> tuple[list[str], bool]:
-    """Strip a leading isti'adha. Needs the first word to be أعوذ and 3 of the 5 positions to agree,
-    so a verse that merely begins with أعوذ بالله (e.g. 2:67) is left alone."""
-    head = words[:len(ISTIADHA)]
-    if len(head) >= 4 and similarity(head[0], ISTIADHA[0]) >= 0.7 and _positional_hits(head, ISTIADHA, 0.7) >= 3:
-        return words[len(head):], True
+    """Strip a leading isti'adha, through the last word that lines up with it (the reciter may skip one).
+    Needs أعوذ first and 3 isti'adha words in order, so a verse that merely begins with أعوذ بالله
+    (2:67) is left alone."""
+    if not words or similarity(words[0], ISTIADHA[0]) < 0.7:
+        return words, False
+    j, last, hits = 0, -1, 0
+    for i, w in enumerate(words[:len(ISTIADHA) + 1]):
+        for t in (0, 1):                      # the next pattern word, or one skipped
+            if j + t < len(ISTIADHA) and similarity(w, ISTIADHA[j + t]) >= 0.7:
+                j, last, hits = j + t + 1, i, hits + 1
+                break
+        else:
+            break
+    if hits >= 3:
+        return words[last + 1:], True
     return words, False
 
 
@@ -26,16 +36,15 @@ def is_basmala_at(words: list[str], start: int) -> bool:
         similarity(window[0], BASMALA[0]) >= 0.75
 
 
-def strip_basmala(words: list[str]) -> tuple[list[str], bool, bool]:
-    """Returns (words, leading_basmala_found, internal_basmala_found). An internal Basmala sits between
-    two surahs in a continuous recitation; it is removed so the surah text on both sides still matches."""
+def strip_basmala(words: list[str]) -> tuple[list[str], bool, list[str] | None]:
+    """Returns (words without a leading Basmala, leading_found, words_with_internal_Basmala_removed).
+    The third value is None when there is no internal Basmala. It is only an *alternative reading*:
+    27:30 contains the Basmala as part of the verse, so the caller must decide by alignment whether
+    removing it helps (a recitation that runs from one surah into the next) or hurts (27:30)."""
     leading = is_basmala_at(words, 0)
     if leading:
         words = words[len(BASMALA):]
-    internal = False
     for i in range(len(words) - len(BASMALA) + 1):
         if is_basmala_at(words, i):
-            words = words[:i] + words[i + len(BASMALA):]
-            internal = True
-            break
-    return words, leading, internal
+            return words, leading, words[:i] + words[i + len(BASMALA):]
+    return words, leading, None

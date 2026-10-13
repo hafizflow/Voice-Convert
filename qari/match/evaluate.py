@@ -62,21 +62,26 @@ def make_range(idx: WordIndex, category: str, rng: random.Random) -> tuple[int, 
     raise RuntimeError(category)
 
 
-def damage(words: list[str], noise: str, rng: random.Random, vocab: list[str]) -> list[str]:
+def damage(words: list[str], noise: str, rng: random.Random, vocab: list[str]) -> tuple[list[str], int, int]:
+    """Returns (words, words_trimmed_at_start, words_trimmed_at_end): a dropped edge word shrinks the
+    range the user actually recited, so the truth must shrink with it."""
     w = list(words)
+    trim_lo = trim_hi = 0
     if "drop1" in noise and len(w) > 4:
-        del w[rng.randrange(len(w))]
+        i = rng.randrange(len(w))
+        del w[i]
+        trim_lo, trim_hi = int(i == 0), int(i == len(words) - 1)
     if "sub1" in noise:
         i = rng.randrange(len(w))
         chars = [c for c in w[i] if c in CONFUSIONS]
         if chars:
             c = rng.choice(chars)
             w[i] = w[i].replace(c, CONFUSIONS[c], 1)
-        else:
-            w[i] = w[i][:-1] or w[i]
+        elif len(w[i]) > 2:
+            w[i] = w[i][:-1]
     if "extra1" in noise:
         w.insert(rng.randrange(len(w) + 1), rng.choice(vocab))
-    return w
+    return w, trim_lo, trim_hi
 
 
 def generate(idx: WordIndex, per_cell: int, seed: int) -> list[Query]:
@@ -88,7 +93,8 @@ def generate(idx: WordIndex, per_cell: int, seed: int) -> list[Query]:
             for _ in range(per_cell):
                 lo, hi = make_range(idx, cat, rng)
                 words = [idx[g].norm for g in range(lo, hi + 1)]
-                words = damage(words, noise, rng, vocab)
+                words, trim_lo, trim_hi = damage(words, noise, rng, vocab)
+                lo, hi = lo + trim_lo, hi - trim_hi
                 text = " ".join(words)
                 if noise == "prefix":
                     text = ISTIADHA + " " + BASMALA + " " + text if rng.random() < 0.5 else BASMALA + " " + text
@@ -115,7 +121,7 @@ def run(matcher: Matcher, queries: list[Query]) -> dict:
             near = abs(r.start_gid - q.start) <= 1 and abs(r.end_gid - q.end) <= 1
             same_text = tuple(keys[r.start_gid:r.end_gid + 1]) == truth_key
             c["matched"] += 1
-            scored.append((r.confidence, near or same_text))
+            scored.append((r.confidence, near))   # right words at the wrong place is NOT correct
             c["exact"] += exact
             c["within1"] += near
             if not near and same_text:

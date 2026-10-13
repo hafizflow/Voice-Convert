@@ -103,10 +103,25 @@ def test_basmala_inside_a_cross_surah_recitation(m, idx):
     assert r.internal_basmala and r.status == "matched" and r.start_gid == lo
 
 
-def test_basmala_then_few_words_anchors_to_the_surah_start(m, idx):
-    text, lo, hi = say(idx, 112, 1, 1, 2)
+def test_basmala_then_two_common_words_is_ambiguous_not_a_confident_guess(m, idx):
+    # "الله لا" starts 2:255, 4:87, 20:8, 64:13 ... : the Basmala must not turn that into 3:2 at 1.0
+    r = m.match("بسم الله الرحمن الرحيم الله لا")
+    assert r.status == "ambiguous" and r.start_gid is None
+    assert len(r.alternatives) >= 3
+
+
+def test_basmala_then_four_words_picks_the_surah_start_when_text_ties(m, idx):
+    text, lo, hi = say(idx, 112, 1, 1, 4)
     r = m.match("بسم الله الرحمن الرحيم " + text)
     assert r.status == "matched" and r.start_gid == lo and r.includes_basmala
+
+
+def test_basmala_then_fatiha_resolves_to_fatiha(m, idx):
+    r = m.match("بسم الله الرحمن الرحيم الحمد لله رب العالمين")
+    assert r.status == "matched" and r.start_gid == idx.gid(1, 1, 1) and not r.includes_basmala
+    short = m.match("بسم الله الرحمن الرحيم الحمد لله")
+    assert short.status == "ambiguous"
+    assert idx.gid(1, 2, 1) in [a.start_gid for a in short.alternatives]
 
 
 def test_basmala_alone_is_the_basmala(m, idx):
@@ -158,3 +173,64 @@ def test_confidence_is_between_zero_and_one_and_drops_with_asr_confidence(m, idx
     hi = m.match(text, asr_confidence=1.0).confidence
     lo = m.match(text, asr_confidence=0.5).confidence
     assert 0 < lo < hi <= 1.0
+
+
+def test_istiadha_with_a_skipped_word_does_not_eat_the_verse(m, idx):
+    text, lo, hi = say(idx, 2, 255)
+    for prefix in ("اعوذ بالله من الشيطان", "اعوذ بالله من", "اعوذ بالله من الرجيم"):
+        r = m.match(prefix + " " + text)
+        assert r.status == "matched" and r.start_gid == lo and r.end_gid == hi, prefix
+
+
+def test_basmala_that_is_part_of_the_verse_is_not_removed(m, idx):
+    # 27:30 ends with the Basmala
+    text, lo, hi = say(idx, 27, 30)
+    r = m.match(text)
+    assert (r.status, r.start_gid, r.end_gid) == ("matched", lo, hi) and not r.internal_basmala
+    r = m.match(text + " " + say(idx, 27, 31)[0])
+    assert r.status == "matched" and r.start_gid == lo and r.end_gid == idx.ayah_range(27, 31)[1]
+
+
+def test_damaged_short_query_with_a_slightly_better_wrong_place_is_not_matched(m):
+    r = m.match("الذين امنوا وعملوا الصالحات م")
+    assert r.status != "matched"
+
+
+def test_refrain_said_twice_is_not_a_confident_match(m):
+    assert m.match("فباي الاء ربكما تكذبان فباي الاء ربكما تكذبان").status != "matched"
+
+
+def test_split_vocative_is_joined_and_keeps_full_confidence(m, idx):
+    r = m.match("يا ايها الذين امنوا اوفوا بالعقود")
+    assert r.status == "matched" and r.vocative_joined
+    assert (idx[r.start_gid].surah, idx[r.start_gid].ayah) == (5, 1) and r.confidence >= 0.9
+
+
+def test_very_long_input_is_truncated_and_fast(m):
+    import time
+    t = time.time()
+    r = m.match(" ".join(["الحمد", "لله"] * 1500))
+    assert r.truncated and time.time() - t < 5
+
+
+def test_session_prior_is_forward_only(m, idx):
+    refrain = "فباي الاء ربكما تكذبان"
+    r = m.match(refrain, session=SessionContext(idx.ayah_range(55, 13)[1]))
+    assert r.status == "matched" and pos(idx, r)[0] == (55, 16, 1)      # not a replay of 55:13
+    end = SessionContext(len(idx) - 1)
+    assert m.match("قل اعوذ برب", session=end).status == "ambiguous"    # no going backwards
+
+
+def test_asr_confidence_is_clamped(m, idx):
+    text, _, _ = say(idx, 112, 1, to=(112, 4))
+    assert m.match(text, asr_confidence=5.0).confidence <= 1.0
+    assert m.match(text, asr_confidence=float("nan")).confidence == 0.0
+    assert m.match(text, asr_confidence=-1).confidence == 0.0
+
+
+def test_confidence_drops_when_words_in_range_are_missing(m, idx):
+    text, _, _ = say(idx, 2, 255, 1, 20)
+    words = text.split()
+    clean = m.match(text).confidence
+    damaged = m.match(" ".join(words[:5] + words[9:])).confidence
+    assert damaged < clean
