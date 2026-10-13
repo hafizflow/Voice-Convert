@@ -6,3 +6,5 @@ prometheus-client
 pyyaml
 numpy
 httpx
+soundfile
+soxr

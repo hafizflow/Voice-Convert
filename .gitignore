@@ -7,3 +7,6 @@ __pycache__/
 .superpowers/
 voices/*/model.pth
 voices/*/*.index
+third_party/
+.venv-applio/
+work/
