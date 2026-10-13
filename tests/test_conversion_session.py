@@ -222,3 +222,49 @@ def test_input_stream_is_bounded(monkeypatch):
     monkeypatch.setattr(session_mod.rtc, "AudioStream", lambda track, **kw: seen.update(kw))
     LiveKitIo().new_stream(object())
     assert seen["capacity"] > 0  # unbounded (0) would let latency grow without limit
+
+
+async def test_converter_is_built_and_run_off_the_event_loop():
+    import threading
+
+    main = threading.get_ident()
+    seen = {}
+
+    class Rec:
+        latency_samples = 0
+
+        def process_block(self, b):
+            seen.setdefault("process", threading.get_ident())
+            return b.copy()
+
+        def reset(self):
+            pass
+
+    def factory(voice):
+        seen["factory"] = threading.get_ident()
+        return Rec()
+
+    trk = audio_track()
+    room, source = FakeRoom(), FakeSource()
+    io = FakeIo(room, source, {trk: FakeStream([pcm(480)])})
+    s = ConversionSession(CFG, "r1", VOICE, None, io=io, converter_factory=factory)
+    t = await run_bg(s)
+    await asyncio.sleep(0.1)
+    room.emit("track_subscribed", trk, None, None)
+    await asyncio.sleep(0.1)
+    assert seen["factory"] != main and seen["process"] != main
+    assert seen["factory"] == seen["process"]  # one thread owns the model (MPS/torch affinity)
+    room.emit("participant_disconnected", object())
+    await asyncio.wait_for(t, 2)
+
+
+async def test_converter_factory_failure_ends_session_and_disconnects():
+    def factory(voice):
+        raise RuntimeError("model file corrupt")
+
+    room = FakeRoom()
+    io = FakeIo(room, FakeSource(), {})
+    s = ConversionSession(CFG, "r1", VOICE, None, io=io, converter_factory=factory)
+    with pytest.raises(RuntimeError):
+        await asyncio.wait_for(s.run(), 2)
+    assert room.disconnected or not room.handlers  # never left a half-open room

@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 
 import numpy as np
@@ -63,13 +64,19 @@ class LiveKitIo:
 
 
 class ConversionSession:
-    def __init__(self, cfg: Config, room_name: str, voice: Voice, converter: StreamingConverter,
-                 io: LiveKitIo | None = None):
+    def __init__(self, cfg: Config, room_name: str, voice: Voice,
+                 converter: StreamingConverter | None = None, io: LiveKitIo | None = None,
+                 converter_factory=None):
         self._cfg = cfg
         self._room_name = room_name
         self._voice = voice
-        self._processor = FrameProcessor(converter)
+        self._converter = converter
+        self._converter_factory = converter_factory
+        self._processor: FrameProcessor | None = FrameProcessor(converter) if converter else None
         self._io = io or LiveKitIo()
+        # One thread owns the model and runs every frame: keeps inference off the
+        # event loop and keeps torch/MPS state on a single thread.
+        self._executor = ThreadPoolExecutor(1, thread_name_prefix=f"conv-{room_name}")
 
     def _worker_token(self) -> str:
         return (
@@ -85,6 +92,17 @@ class ConversionSession:
         )
 
     async def run(self) -> None:
+        try:
+            if self._processor is None:
+                loop = asyncio.get_running_loop()
+                converter = await loop.run_in_executor(
+                    self._executor, self._converter_factory, self._voice)
+                self._processor = FrameProcessor(converter)
+            await self._run_room()
+        finally:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+
+    async def _run_room(self) -> None:
         room = self._io.new_room()
         joined = asyncio.Event()
         closed = asyncio.Event()
@@ -157,7 +175,9 @@ class ConversionSession:
                 t0 = time.perf_counter()
                 frame = ev.frame
                 try:
-                    out = self._processor.process(frame.data, frame.num_channels)
+                    out = await asyncio.get_running_loop().run_in_executor(
+                        self._executor, self._processor.process,
+                        bytes(frame.data), frame.num_channels)
                 except Exception:
                     metrics.FRAME_ERRORS.inc()
                     log.exception("frame processing failed; sending silence")

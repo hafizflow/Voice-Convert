@@ -17,7 +17,7 @@ BASE = {
 def test_defaults():
     c = load_config(BASE)
     assert c.livekit_internal_url == "ws://localhost:7880"
-    assert c.voices_dir == Path("voices")
+    assert c.voices_dir == Path("voices").resolve()  # absolute: Applio chdirs
     assert c.max_sessions == 4
     assert c.join_timeout_s == 30.0
 
@@ -62,3 +62,12 @@ def test_production_refuses_weak_or_default_secrets(name, weak):
 
 def test_dev_mode_allows_dev_defaults():
     assert load_config({**BASE, "LIVEKIT_API_KEY": "devkey", "LIVEKIT_API_SECRET": "secret"})
+
+
+def test_rvc_defaults_and_overrides():
+    c = load_config(BASE)
+    assert (c.rvc_block_ms, c.rvc_f0, c.rvc_device) == (200, "fcpe", "cpu")
+    c = load_config({**BASE, "RVC_BLOCK_MS": "100", "RVC_EXTRA_S": "0.3", "RVC_F0": "rmvpe",
+                     "RVC_DEVICE": "mps", "RVC_INDEX_RATE": "0.0"})
+    assert (c.rvc_block_ms, c.rvc_extra_s, c.rvc_f0, c.rvc_device, c.rvc_index_rate) == (
+        100, 0.3, "rmvpe", "mps", 0.0)

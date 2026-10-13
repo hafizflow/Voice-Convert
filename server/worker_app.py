@@ -6,7 +6,7 @@ from fastapi import FastAPI, Header, HTTPException
 from prometheus_client import make_asgi_app
 from pydantic import BaseModel
 
-from engine.converter import PassthroughConverter
+from engine.factory import default_converter_factory
 from engine.registry import load_registry
 from server.config import Config, load_config
 from server.manager import AtCapacity, DuplicateRoom, SessionManager
@@ -21,8 +21,9 @@ class SessionRequest(BaseModel):
 
 
 def create_app(cfg: Config, registry, session_factory=ConversionSession,
-               converter_factory=lambda voice: PassthroughConverter()) -> FastAPI:
+               converter_factory=None) -> FastAPI:
     manager = SessionManager(cfg.max_sessions)
+    converter_factory = converter_factory or default_converter_factory(cfg)
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -38,7 +39,8 @@ def create_app(cfg: Config, registry, session_factory=ConversionSession,
         voice = registry.get(body.voice_id)
         if voice is None:
             raise HTTPException(404, "unknown voice")
-        session = session_factory(cfg, body.room, voice, converter_factory(voice))
+        # the converter is built inside the session, on its own thread, after the capacity check
+        session = session_factory(cfg, body.room, voice, None, converter_factory=converter_factory)
         try:
             manager.start(body.room, session.run)
         except AtCapacity:

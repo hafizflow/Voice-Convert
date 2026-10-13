@@ -14,7 +14,7 @@ H = {"X-Internal-Secret": "int-secret"}
 
 
 class FakeSession:
-    def __init__(self, cfg, room, voice, converter):
+    def __init__(self, cfg, room, voice, converter, **kw):
         self.room = room
 
     async def run(self):

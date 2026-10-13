@@ -19,6 +19,12 @@ class Config:
     voices_dir: Path
     max_sessions: int
     join_timeout_s: float
+    # RVC streaming. Defaults are the best config measured on an Apple M4 (see tools/bench_blocks.py).
+    rvc_block_ms: int = 200
+    rvc_extra_s: float = 0.15
+    rvc_f0: str = "fcpe"
+    rvc_device: str | None = "cpu"
+    rvc_index_rate: float = 0.4
 
 
 def load_config(env: Mapping[str, str] | None = None) -> Config:
@@ -47,7 +53,12 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         app_api_key=req("APP_API_KEY"),
         internal_secret=req("INTERNAL_SECRET"),
         worker_url=req("WORKER_URL"),
-        voices_dir=Path(env.get("VOICES_DIR", "voices")),
+        voices_dir=Path(env.get("VOICES_DIR", "voices")).resolve(),
         max_sessions=max_sessions,
         join_timeout_s=float(env.get("JOIN_TIMEOUT_S", "30")),
+        rvc_block_ms=int(env.get("RVC_BLOCK_MS", "200")),
+        rvc_extra_s=float(env.get("RVC_EXTRA_S", "0.15")),
+        rvc_f0=env.get("RVC_F0", "fcpe"),
+        rvc_device=env.get("RVC_DEVICE", "cpu") or None,
+        rvc_index_rate=float(env.get("RVC_INDEX_RATE", "0.4")),
     )
