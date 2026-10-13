@@ -11,6 +11,7 @@ algorithmic latency.
 import argparse
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
@@ -88,6 +89,8 @@ def main() -> None:
     p.add_argument("--pitch", type=int, default=0)
     p.add_argument("--seconds", type=float, default=0, help="only process the first N seconds")
     a = p.parse_args()
+    # Applio chdirs into its own directory, so make every path absolute up front.
+    a.input, a.output = str(Path(a.input).resolve()), str(Path(a.output).resolve())
 
     x = load_48k_mono(a.input)
     if a.seconds:

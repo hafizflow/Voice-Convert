@@ -31,7 +31,7 @@ def make(**kw):
 def test_block_size_is_derived_from_block_ms():
     conv, changer = make(block_ms=100)
     assert changer.kw["block_frame"] == 4800
-    assert changer.kw["model_path"] == "m.pth" and changer.kw["index_path"] == "m.index"
+    assert changer.kw["model_path"].endswith("/m.pth") and changer.kw["index_path"].endswith("/m.index")
 
 
 def test_latency_is_block_plus_crossfade():
@@ -81,3 +81,48 @@ def test_converted_audio_comes_out_after_one_block_of_delay():
     y = conv.process_block(x)
     assert not y[:960].any()
     assert np.allclose(y[960:], 0.5)
+
+
+def test_model_and_index_paths_are_made_absolute_before_the_factory_runs():
+    seen = {}
+
+    def factory(**kw):
+        seen.update(kw)
+        return FakeChanger(**kw)
+
+    RVCConverter("relative/model.pth", "relative/m.index", changer_factory=factory)
+    from pathlib import Path
+    assert Path(seen["model_path"]).is_absolute() and Path(seen["index_path"]).is_absolute()
+
+
+def test_silence_gate_defaults_to_minus_60_db_not_zero():
+    # Applio's 0 dB threshold gates every block of normal audio into silence.
+    _, changer = make()
+    assert changer.kw["silent_threshold"] == -60
+
+
+def test_changer_is_warmed_up_once_at_construction_when_it_supports_it():
+    calls = []
+
+    class Warm(FakeChanger):
+        def warmup(self, **kw):
+            calls.append(kw)
+
+    RVCConverter("m", None, changer_factory=lambda **kw: Warm(**kw), index_rate=0.6)
+    assert len(calls) == 1 and calls[0]["index_rate"] == 0.6
+
+
+def test_relative_paths_resolve_against_startup_dir_even_after_a_chdir(tmp_path, monkeypatch):
+    import engine.rvc as rvc_mod
+
+    monkeypatch.setattr(rvc_mod, "_START_CWD", tmp_path)
+    seen = {}
+
+    def factory(**kw):
+        seen.update(kw)
+        return FakeChanger(**kw)
+
+    monkeypatch.chdir("/")  # simulates Applio having chdir'd away
+    RVCConverter("voices/q/model.pth", "voices/q/added.index", changer_factory=factory)
+    assert seen["model_path"] == str(tmp_path / "voices/q/model.pth")
+    assert seen["index_path"] == str(tmp_path / "voices/q/added.index")
