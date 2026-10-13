@@ -234,3 +234,102 @@ def test_confidence_drops_when_words_in_range_are_missing(m, idx):
     clean = m.match(text).confidence
     damaged = m.match(" ".join(words[:5] + words[9:])).confidence
     assert damaged < clean
+
+
+# ---- one- and two-word verses (55:1 الرحمن, 1:3, 20:1 طه ...) --------------------------------------
+@pytest.mark.parametrize("text,ayah", [
+    ("ٱلرَّحْمَـٰنُ", (55, 1)),
+    ("الرحمن", (55, 1)),            # simple-script spelling an ASR returns
+    ("الرحمان", (55, 1)),
+    ("الرحمن الرحيم", (1, 3)),
+    ("والفجر", (89, 1)),
+    ("الحاقة", (69, 1)),
+])
+def test_short_whole_verse_matches(m, idx, text, ayah):
+    first, last = idx.ayah_range(*ayah)
+    r = m.match(text)
+    assert (r.status, r.start_gid, r.end_gid) == ("matched", first, last), r.status
+
+
+def test_short_verse_is_not_confident_enough_to_beat_a_longer_exact_match(m, idx):
+    # "الرحمن" is a word inside many verses; only the whole-verse reading may claim it
+    r = m.match("الرحمن")
+    assert r.confidence <= 0.95
+
+
+def test_every_one_and_two_word_verse_is_found(m, idx):
+    miss = []
+    seen = {}
+    for w in idx.words:
+        seen.setdefault((w.surah, w.ayah), []).append(w)
+    for (s, a), ws in seen.items():
+        if len(ws) > 2:
+            continue
+        r = m.match(" ".join(w.uthmani for w in ws), 0.95)
+        hit = r.start_gid is not None and r.start_gid <= ws[0].gid and r.end_gid >= ws[-1].gid
+        # identical wording elsewhere is a legitimate tie: the verse must then be among the alternatives
+        tie = r.status == "ambiguous" and any(c.start_gid == ws[0].gid for c in r.alternatives)
+        if not (r.status == "matched" and r.start_gid == ws[0].gid and r.end_gid == ws[-1].gid) and not tie:
+            miss.append((s, a, r.status))
+    assert not miss, miss[:20]
+
+
+@pytest.mark.parametrize("text,at", [
+    ("ص", (38, 1, 1)),              # the letter alone opens a longer verse: only that word plays
+    ("ق", (50, 1, 1)),
+])
+def test_lone_rare_word_is_placed_exactly(m, idx, text, at):
+    r = m.match(text)
+    assert r.status == "matched" and r.start_gid == r.end_gid == idx.gid(*at)
+
+
+def test_lone_common_word_is_not_guessed(m):
+    r = m.match("الله")
+    assert r.status == "too_short" and r.start_gid is None
+
+
+@pytest.mark.parametrize("text,at", [
+    ("الف لام ميم صاد", (7, 1, 1)),
+    ("كاف ها يا عين صاد", (19, 1, 1)),
+    ("طا ها", (20, 1, 1)),
+    ("يا سين", (36, 1, 1)),
+    ("ياسين", (36, 1, 1)),
+    ("صاد", (38, 1, 1)),
+    ("قاف", (50, 1, 1)),
+    ("نون", (68, 1, 1)),
+])
+def test_spoken_letter_names_find_the_opening_letters(m, idx, text, at):
+    r = m.match(text)
+    assert r.status == "matched" and r.start_gid == idx.gid(*at), (r.status, r.start_gid)
+
+
+def test_spoken_letter_names_tie_between_surahs_is_ambiguous(m, idx):
+    r = m.match("الف لام ميم")
+    assert r.status == "ambiguous"
+    starts = {c.start_gid for c in r.alternatives}
+    assert idx.gid(2, 1, 1) in starts and idx.gid(3, 1, 1) in starts
+
+
+def test_letter_names_inside_a_verse_are_left_alone(m, idx):
+    text, lo, hi = say(idx, 2, 255)
+    r = m.match(text)
+    assert (r.start_gid, r.end_gid) == (lo, hi)
+
+
+def test_spoken_letter_names_that_two_surahs_share_are_a_tie(m, idx):
+    r = m.match("طا سين ميم")
+    assert r.status == "ambiguous"
+    assert {c.start_gid for c in r.alternatives} == {idx.gid(26, 1, 1), idx.gid(28, 1, 1)}
+
+
+def test_an_ordinary_word_that_sounds_like_a_letter_name_is_not_rewritten(m, idx):
+    text, lo, hi = say(idx, 4, 55)   # contains صَدَّ
+    r = m.match(text)
+    assert (r.start_gid, r.end_gid) == (lo, hi)
+
+
+def test_lone_common_word_still_offers_places_to_play(m, idx):
+    r = m.match("الله")
+    assert r.status == "too_short" and r.start_gid is None
+    assert r.alternatives and all(idx[c.start_gid].norm.replace("ا", "") == "لله" for c in r.alternatives)
+    assert r.alternatives[0].start_gid == min(c.start_gid for c in r.alternatives)

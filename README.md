@@ -102,6 +102,12 @@ latency budget in the spec.
 
 ## Hear the Qari (core)
 
+
+**Short verses.** One- and two-word verses (55:1 ٱلرَّحْمَـٰنُ, 20:1 طه, 1:3, 89:1 ...) are placed by equating the
+recitation with a whole verse (confidence x0.9, since so little was said); a lone rare word (ص, ق) plays just that
+word; spoken letter names (الف لام ميم, طا ها, ياسين) are read as the opening letters. Words that occur in many
+verses (a lone «الله») are never guessed: they come back as `too_short` with their earliest occurrences.
+
 `qari/text/` loads the Tanzil Uthmani text into a global word index and provides the Arabic normalizer.
 Spec: `docs/superpowers/specs/2026-10-13-hear-the-qari-core-design.md`. Text credit: Tanzil Project,
 https://tanzil.net (CC BY 3.0, verbatim only; see `data/tanzil/README.md`).

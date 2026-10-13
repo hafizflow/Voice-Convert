@@ -63,3 +63,10 @@ def test_gibberish_with_no_candidate_has_nothing_to_play(client):
 
 def test_play_endpoint_rejects_bad_range(client):
     assert client.get("/api/play?start_gid=10&end_gid=5").status_code == 400
+
+
+def test_single_word_verse_ar_rahman_is_matched_and_playable(client):
+    for text in ("ٱلرَّحْمَـٰنُ", "الرحمن"):
+        r = client.post("/api/match", json={"text": text, "asr_confidence": 0.9}).json()
+        assert r["status"] == "matched" and r["range"]["ref"] == "55:1"
+        assert r["play"]["segments"] and r["forced"] is None

@@ -15,6 +15,19 @@ from qari.text.index import WordIndex
 from qari.text.normalize import normalize_words
 
 
+# Spoken names of the Arabic letters (normalized spelling, alefs kept) -> the letter they stand for.
+# "strong" names are not everyday words, so a run containing one is read as spelled-out letters.
+_LETTER_NAMES = {
+    "الف": "ا", "لام": "ل", "ميم": "م", "صاد": "ص", "راء": "ر", "را": "ر", "كاف": "ك", "ها": "ه",
+    "هاء": "ه", "يا": "ي", "ياء": "ي", "عين": "ع", "طا": "ط", "طاء": "ط", "سين": "س", "حا": "ح",
+    "حاء": "ح", "قاف": "ق", "نون": "ن",
+}
+_STRONG_NAMES = {"الف", "لام", "ميم", "صاد", "كاف", "قاف", "نون", "عين", "سين", "راء", "هاء", "ياء", "طاء", "حاء"}
+_LONE_NAMES = {"صاد", "قاف", "نون"}        # one spoken name is enough only when it is not an everyday word
+_MUQATTAAT_SURAHS = (2, 3, 7, 10, 11, 12, 13, 14, 15, 19, 20, 26, 27, 28, 29, 30, 31, 32, 36, 38, 40,
+                     41, 42, 43, 44, 45, 46, 50, 68)
+
+
 @dataclass(frozen=True)
 class MatcherConfig:
     min_words: int = 3                 # below this: never auto-play, return candidates
@@ -32,6 +45,9 @@ class MatcherConfig:
     max_postings: int = 400
     max_words: int = 300               # longer input is truncated (cost is quadratic)
     dp_budget: int = 3000              # candidates tried ~ dp_budget / query length (floor 3)
+    whole_ayah_max_words: int = 4      # short queries may claim a verse of at most this many words, whole
+    whole_ayah_factor: float = 0.9     # confidence discount: one or two words say little
+    rare_phrase_max: int = 3           # a short phrase seen in at most this many places is still placeable
 
 
 @dataclass
@@ -78,6 +94,23 @@ class Matcher:
         starts[1] = index.gid(1, 2, 1)     # after a spoken Basmala, Al-Fatiha continues at ayah 2
         self._surah_starts = list(starts.values())
         self._surah_start_set = set(self._surah_starts)
+        # short verses (55:1 is one word, 20:1 is two): a 1-2 word recitation can only be placed by
+        # equating it with a whole verse, since the same words occur inside many longer verses
+        self._muqattaat: dict[str, list[int]] = {}      # opening letters (الم, ص, ن ...) -> their gids
+        for surah in _MUQATTAAT_SURAHS:
+            for ayah in ((1, 2) if surah == 42 else (1,)):
+                g = index.gid(surah, ayah, 1)
+                self._muqattaat.setdefault(self.ngrams.keys[g], []).append(g)
+        self._positions: dict[str, list[int]] = {}
+        for g, k in enumerate(self.ngrams.keys):
+            self._positions.setdefault(k, []).append(g)
+        self._short_ayahs: dict[int, list[tuple[int, int]]] = {}
+        seen: dict[tuple[int, int], list[int]] = {}
+        for w in index.words:
+            seen.setdefault((w.surah, w.ayah), []).append(w.gid)
+        for gids in seen.values():
+            if len(gids) <= self.cfg.whole_ayah_max_words:
+                self._short_ayahs.setdefault(len(gids), []).append((gids[0], gids[-1]))
 
     # ---- public -------------------------------------------------------------------------------
     def match(self, text: str | list[str], asr_confidence: float = 1.0,
@@ -85,6 +118,17 @@ class Matcher:
         asr = asr_confidence if asr_confidence == asr_confidence else 0.0   # NaN -> 0
         asr = min(1.0, max(0.0, asr))
         words = normalize_words(text) if isinstance(text, str) else [w for t in text for w in normalize_words(t)]
+        spelled, strong = self._spell_letters(words)
+        if spelled == words:
+            return self._match_words(words, asr, session)
+        # The same recitation heard as letter names (الف لام ميم) or as words; the strong spelling wins ties
+        # (صاد is the letter, صد the verb), a weak one (طا ها) only when the words explain nothing.
+        a, b = self._match_words(spelled, asr, session), self._match_words(words, asr, session)
+        first, second = (a, b) if strong else (b, a)
+        rank = {"matched": 3, "ambiguous": 2, "too_short": 1, "not_found": 0}
+        return max((first, second), key=lambda r: (rank[r.status], r.score * r.n_words, r is first))
+
+    def _match_words(self, words: list[str], asr: float, session: SessionContext | None) -> MatchResult:
         q = [skeleton(w) for w in words]
         q, istiadha = strip_istiadha(q)
         q, basmala, without_internal = strip_basmala(q)
@@ -130,6 +174,49 @@ class Matcher:
                 i += 1
         return out
 
+    @staticmethod
+    def _letter_run(token: str) -> tuple[str, bool] | None:
+        """`token` as a spoken letter name or a fused run of names (ياسين = يا + سين) -> (letters, has a
+        strong name); None if it is neither."""
+        if token in _LETTER_NAMES:
+            return _LETTER_NAMES[token], token in _STRONG_NAMES
+        best: dict[int, tuple[str, bool]] = {0: ("", False)}
+        for i in range(len(token)):
+            if i not in best:
+                continue
+            for n in (2, 3, 4):
+                part = token[i:i + n]
+                if part in _LETTER_NAMES:
+                    letters, strong = best[i]
+                    cand = (letters + _LETTER_NAMES[part], strong or part in _STRONG_NAMES)
+                    if i + n not in best or (cand[1] and not best[i + n][1]):
+                        best[i + n] = cand
+        done = best.get(len(token))
+        return done if done and len(done[0]) >= 2 else None
+
+    def _spell_letters(self, words: list[str]) -> tuple[list[str], bool]:
+        """Spoken letter names (الف لام ميم, طا ها, ياسين) -> the one word the Uthmani text writes (الم, طه,
+        يس). Returns the new word list and whether a strong name was involved."""
+        out, i, strong_any = [], 0, False
+        while i < len(words):
+            j, letters, strong, parts = i, "", False, 0
+            while j < len(words):
+                one = self._letter_run(words[j])
+                if one is None:
+                    break
+                letters += one[0]
+                strong = strong or one[1]
+                parts += 1 if words[j] in _LETTER_NAMES else 2
+                j += 1
+            if j > i and parts >= 2 or (j == i + 1 and words[i] in _LONE_NAMES):
+                out.append(letters)
+                strong_any = strong_any or strong
+                i = j
+            else:
+                out.append(words[i])
+                i += 1
+        return out, strong_any
+
     def _resolve(self, q: list[str], basmala: bool, asr: float, session: SessionContext | None) -> MatchResult:
         base = dict(n_words=len(q), includes_basmala=basmala)
         if not q:
@@ -139,8 +226,14 @@ class Matcher:
             cands += self._anchored_candidates(q)   # a Basmala usually means a surah start: a hint, not a filter
         ranked = self._rank(cands)
         need = self.cfg.min_words_anchored if basmala else self.cfg.min_words
+        short_whole = False
         if len(q) < need:
-            return MatchResult("too_short", alternatives=ranked[:self.cfg.max_alternatives], **base)
+            whole = self._rank(self._whole_ayah_candidates(q) or self._muqattaat_candidates(q)
+                               or self._rare_phrase_candidates(q))
+            if not whole:
+                alts = ranked[:self.cfg.max_alternatives] or self._first_occurrences(q)
+                return MatchResult("too_short", alternatives=alts, **base)
+            ranked, short_whole = whole, True
         if not ranked or ranked[0].score < self.cfg.min_score:
             return MatchResult("not_found", alternatives=ranked[:3], **base)
 
@@ -167,6 +260,10 @@ class Matcher:
         missing = sum(o.kind == "missing" for o in top.ops)
         parts = {"asr": asr, "coverage": top.coverage, "mean_sim": top.mean_sim, "uniqueness": uniqueness,
                  "completeness": aligned / max(1, aligned + missing)}
+        if short_whole:
+            parts["short_query"] = self.cfg.whole_ayah_factor
+            uniqueness *= self.cfg.whole_ayah_factor
+            parts["uniqueness"] = uniqueness
         conf = asr * top.coverage * top.mean_sim * uniqueness * parts["completeness"]
         return MatchResult("matched", start, end, score=top.score, confidence=conf, confidence_parts=parts,
                            ops=top.ops, used_session=used_session, n_words=len(q), includes_basmala=includes)
@@ -181,6 +278,55 @@ class Matcher:
         for d in self.ngrams.top_diagonals(votes, top_n, min_fraction=self.cfg.vote_floor):
             c = self._align_window(q, d - self.cfg.slack, d + len(q) + self.cfg.slack)
             if c is not None:
+                out.append(c)
+        return out
+
+    def _whole_ayah_candidates(self, q: list[str]) -> list[Candidate]:
+        """Verses of about the query's length that the query explains completely, start to end."""
+        out = []
+        for n in range(max(1, len(q) - 1), len(q) + 2):
+            for first, last in self._short_ayahs.get(n, ()):
+                c = self._align_window(q, first, last + 1)
+                if (c is not None and c.start_gid == first and c.end_gid == last
+                        and c.score >= self.cfg.min_score and c.coverage >= 1.0):
+                    out.append(c)
+        return out
+
+    def _first_occurrences(self, q: list[str]) -> list[Candidate]:
+        """Nothing better to offer for a lone word: its earliest exact occurrences (never auto-played)."""
+        keys, out = self.ngrams.keys, []
+        for g in self._positions.get(q[0], ()):
+            if g + len(q) <= len(keys) and all(keys[g + i] == w for i, w in enumerate(q)):
+                c = self._align_window(q, g, g + len(q))
+                if c is not None and c.start_gid == g:
+                    out.append(c)
+                    if len(out) >= self.cfg.max_alternatives:
+                        break
+        return out
+
+    def _muqattaat_candidates(self, q: list[str]) -> list[Candidate]:
+        """The opening letters (ن, ص, الم ...) are known places even when the same letter is common."""
+        if len(q) != 1:
+            return []
+        out = []
+        for g in self._muqattaat.get(q[0], ()):
+            c = self._align_window(q, g, g + 1)
+            if c is not None and c.start_gid == g:
+                out.append(c)
+        return out
+
+    def _rare_phrase_candidates(self, q: list[str]) -> list[Candidate]:
+        """A short phrase spelled exactly like the text and found in only a few places (a lone ص or ق:
+        the letter opens a longer verse, so only that word plays)."""
+        keys = self.ngrams.keys
+        starts = [g for g in self._positions.get(q[0], ())
+                  if g + len(q) <= len(keys) and all(keys[g + i] == w for i, w in enumerate(q))]
+        if not starts or len(starts) > self.cfg.rare_phrase_max:
+            return []
+        out = []
+        for g in starts:
+            c = self._align_window(q, g, g + len(q))
+            if c is not None and c.coverage >= 1.0 and c.start_gid == g:
                 out.append(c)
         return out
 
