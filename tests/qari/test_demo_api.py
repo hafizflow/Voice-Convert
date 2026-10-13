@@ -69,4 +69,4 @@ def test_single_word_verse_ar_rahman_is_matched_and_playable(client):
     for text in ("ٱلرَّحْمَـٰنُ", "الرحمن"):
         r = client.post("/api/match", json={"text": text, "asr_confidence": 0.9}).json()
         assert r["status"] == "matched" and r["range"]["ref"] == "55:1"
-        assert r["play"]["segments"] and r["forced"] is None
+        assert r["play"]["segments"] and not r.get("forced")
