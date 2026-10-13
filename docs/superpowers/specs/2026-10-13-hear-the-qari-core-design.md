@@ -61,7 +61,7 @@ verses. Which one ships is gated on the email above, not on engineering.
 ```
 qari/
   text/
-    tanzil.py        load Tanzil Uthmani (+ simple-clean), split Basmala, build WordIndex
+    tanzil.py        load Tanzil Uthmani, split Basmala, build WordIndex
     normalize.py     normalize(str) -> str, one function used for Quran text AND ASR output
     index.py         WordIndex: words[gid], verse<->gid ranges, surah/ayah/pos lookups
   reciters/
@@ -179,8 +179,14 @@ a source needs it.
 
 1. Does quran-align cover Afasy at a usable bitrate? (check in M2, not assumed)
 2. Does the QF API return segments for Afasy for every ayah? Coverage is verified in M2, not assumed.
-3. Does Tanzil's text prepend the Basmala to the first ayah of each surah? M1's loader handles it either
-   way and asserts which, rather than relying on this note.
+3. ~~Does Tanzil prepend the Basmala?~~ **Resolved by inspecting the file (2026-10-13):** yes for 110 of
+   the 112 surahs that have one; surahs 95 and 97 spell it with a shadda (`بِّسْمِ`), so detection compares
+   the first four normalized words, not a string prefix. 1:1 is the Basmala itself and 9:1 has none.
+   Total is 77,433 words once prefixes are stripped (pinned in a test).
+3b. **New finding: simple-clean cannot be aligned word-for-word with Uthmani.** 363 verses differ in word
+   count (Uthmani joins vocatives, e.g. يَٰٓأَيُّهَا vs simple `يا أيها`). So M1 builds the index from Uthmani
+   only and derives `norm` with the normalizer; simple-clean is not shipped. ASR output that splits such
+   words is a matcher concern for M3 (query-side joining or 2:1 alignment ops).
 4. Written permission from QF and any needed rights for the reciter (user action).
 
 ## Decomposition (remaining sub-projects)
