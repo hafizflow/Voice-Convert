@@ -22,10 +22,17 @@ def test_match_returns_text_segments_and_range(client):
 
 
 def test_partial_range_has_padded_start_and_open_end_at_ayah_end(client):
-    r = client.post("/api/match", json={"text": "الله لا اله الا هو الحي القيوم", "pad_ms": 100}).json()
+    r = client.post("/api/match", json={"text": "لا تاخذه سنه ولا نوم له ما في السماوات وما في الارض", "pad_ms": 100}).json()
     assert r["status"] == "matched"
     seg = r["play"]["segments"][0]
     assert seg["start_ms"] >= 0 and seg["label"] == "2:255"
+    assert any(not w["in_range"] for w in seg["words"]) or seg["start_ms"] > 0   # a sub-range, not the whole ayah
+
+
+def test_phrase_shared_by_two_verses_is_ambiguous(client):
+    # "الله لا اله الا هو الحي القيوم" opens both 2:255 and 3:2
+    r = client.post("/api/match", json={"text": "الله لا اله الا هو الحي القيوم"}).json()
+    assert r["status"] == "ambiguous" and r["range"] is None
 
 
 def test_ambiguous_refrain_has_alternatives_and_no_range(client):
