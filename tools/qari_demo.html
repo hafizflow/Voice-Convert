@@ -38,16 +38,19 @@
 <body>
 <main>
   <h1>Hear the Qari: test page</h1>
-  <div class="sub">Type or speak a recitation. Matching, Tanzil text and Qari segments are the real pipeline; the microphone uses Chrome's Arabic recognition only as a stand-in for the Quran ASR that is not built yet.</div>
+  <div class="sub">Tap <b>Start listening</b> once, then recite a verse, hear the Qari, and recite the next. It repeats until you tap Stop. Matching, Tanzil text and Qari segments are the real pipeline; the microphone uses Chrome's Arabic recognition only as a stand-in for the Quran ASR that is not built yet.</div>
 
   <div class="card">
     <textarea id="text" placeholder="اكتب ما تلوت…" dir="rtl"></textarea>
     <div class="row">
       <button class="primary" id="go">Find and play</button>
-      <button class="rec" id="mic">Mic</button>
-      <label>padding <input type="number" id="pad" value="100" min="0" max="500" step="10"> ms</label>
-      <label><input type="checkbox" id="autoplay" checked> auto-play when confident (&ge; 0.9)</label>
+      <button class="rec" id="mic">Start listening</button>
       <button id="reset">Reset session</button>
+    </div>
+    <div class="row">
+      <label>padding <input type="number" id="pad" value="100" min="0" max="500" step="10"> ms</label>
+      <label>end of speech after <input type="number" id="silence" value="1400" min="500" max="4000" step="100"> ms of silence</label>
+      <label><input type="checkbox" id="lowconf"> also play lower-confidence matches (&ge; 0.5)</label>
     </div>
     <div class="row samples meta">Try:
       <button data-t="قل هو الله احد الله الصمد">112:1-2</button>
@@ -59,6 +62,7 @@
     </div>
   </div>
 
+  <div class="card" id="status" style="display:none"></div>
   <div id="out"></div>
   <audio id="audio" preload="auto"></audio>
 </main>
@@ -73,15 +77,19 @@ async function api(path, body) {
   return r.json();
 }
 
+function shouldPlay(res) {
+  return !!res.range && (res.confidence >= 0.9 || ($('#lowconf').checked && res.confidence >= 0.5));
+}
+
 async function find(text, asrConf = 1.0) {
-  if (!text.trim()) return;
+  if (!text.trim()) return null;
   $('#out').innerHTML = '<div class="card meta">matching…</div>';
   try {
     const res = await api('/api/match', {text, asr_confidence: asrConf, last_end_gid: lastEnd, pad_ms: +$('#pad').value});
     render(res);
-    if (res.range) lastEnd = res.range.end_gid;
-    if (res.range && res.confidence >= 0.9 && $('#autoplay').checked) playPlan(res.play);
-  } catch (e) { $('#out').innerHTML = `<div class="card note">Error: ${e.message}</div>`; }
+    if (res.range && shouldPlay(res)) lastEnd = res.range.end_gid;   // the session only follows what was played
+    return res;
+  } catch (e) { $('#out').innerHTML = `<div class="card note">Error: ${e.message}</div>`; return null; }
 }
 
 function wordsHtml(play, mistakes) {
@@ -152,20 +160,83 @@ async function playPlan(p) {
   }
 }
 
-// microphone via the browser's own recognizer (stand-in for the real ASR)
+// Hands-free loop: listen -> end of speech -> match -> play the Qari -> listen again, until stopped.
+// The microphone is off while the Qari plays, otherwise it would hear the playback.
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-if (!SR) { $('#mic').disabled = true; $('#mic').title = 'Needs Chrome or Edge'; }
-else {
-  const rec = new SR(); rec.lang = 'ar-SA'; rec.interimResults = false; rec.maxAlternatives = 1;
-  rec.onresult = e => { const r = e.results[0][0]; $('#text').value = r.transcript; find(r.transcript, r.confidence || 1); };
-  rec.onend = () => $('#mic').classList.remove('on');
-  rec.onerror = e => { $('#out').innerHTML = `<div class="card note">Mic: ${e.error}</div>`; };
-  $('#mic').addEventListener('click', () => { stop(); rec.start(); $('#mic').classList.add('on'); });
+let listening = false, handling = false, rec = null, silenceTimer = null, transcript = '', confs = [];
+
+function setStatus(text, cls = '') {
+  const el = $('#status'); el.style.display = text ? '' : 'none';
+  el.className = 'card ' + cls; el.textContent = text;
 }
 
-$('#go').addEventListener('click', () => find($('#text').value));
+function beginRecognition() {
+  if (!listening) return;
+  transcript = ''; confs = [];
+  setStatus('Listening… recite a verse', 'meta');
+  rec = new SR(); rec.lang = 'ar-SA'; rec.continuous = true; rec.interimResults = true;
+  rec.onresult = e => {
+    let t = ''; confs = [];
+    for (let i = 0; i < e.results.length; i++) {
+      t += e.results[i][0].transcript + ' ';
+      if (e.results[i].isFinal && e.results[i][0].confidence) confs.push(e.results[i][0].confidence);
+    }
+    transcript = t.trim(); $('#text').value = transcript;
+    clearTimeout(silenceTimer);
+    silenceTimer = setTimeout(endOfSpeech, +$('#silence').value);
+  };
+  rec.onerror = e => {
+    if (e.error === 'no-speech' || e.error === 'aborted') return;
+    stopListening();
+    setStatus(`Microphone stopped: ${e.error}`, 'note');
+  };
+  rec.onend = () => {   // the browser ended the session by itself (long silence): keep the loop going
+    if (listening && !handling) { transcript ? endOfSpeech() : setTimeout(beginRecognition, 200); }
+  };
+  try { rec.start(); } catch (e) { setTimeout(beginRecognition, 300); }
+}
+
+async function endOfSpeech() {
+  if (handling || !listening) return;
+  handling = true; clearTimeout(silenceTimer);
+  const text = transcript, conf = confs.length ? confs.reduce((a, b) => a + b) / confs.length : 1.0;
+  try { rec.onend = null; rec.abort(); } catch (e) {}
+  if (!text) { handling = false; return beginRecognition(); }
+  setStatus('Matching…', 'meta');
+  const res = await find(text, conf);
+  if (listening && res && shouldPlay(res)) {
+    setStatus('Playing the Qari… (microphone paused)', 'meta');
+    await playPlan(res.play);
+  } else if (listening) {
+    setStatus(res && res.status === 'ambiguous' ? 'Several places match: pick one below, or keep reciting'
+      : res && res.range ? 'Not sure enough to play: listening again'
+      : 'Did not recognise a verse: listening again', 'note');
+    await new Promise(r => setTimeout(r, 1200));
+  }
+  handling = false;
+  if (listening) setTimeout(beginRecognition, 350);
+}
+
+function startListening() {
+  listening = true; handling = false;
+  $('#mic').textContent = 'Stop'; $('#mic').classList.add('on');
+  stop(); beginRecognition();
+}
+
+function stopListening() {
+  listening = false; clearTimeout(silenceTimer);
+  try { rec.onend = null; rec.abort(); } catch (e) {}
+  stop();
+  $('#mic').textContent = 'Start listening'; $('#mic').classList.remove('on');
+  setStatus('Stopped', 'meta');
+}
+
+if (!SR) { $('#mic').disabled = true; $('#mic').title = 'Needs Chrome or Edge'; }
+else $('#mic').addEventListener('click', () => listening ? stopListening() : startListening());
+
+$('#go').addEventListener('click', async () => { const r = await find($('#text').value); if (r && shouldPlay(r)) playPlan(r.play); });
 $('#reset').addEventListener('click', () => { lastEnd = null; $('#out').innerHTML = '<div class="card meta">session cleared</div>'; });
-document.querySelectorAll('.samples button').forEach(b => b.addEventListener('click', () => { $('#text').value = b.dataset.t; find(b.dataset.t); }));
+document.querySelectorAll('.samples button').forEach(b => b.addEventListener('click', async () => { $('#text').value = b.dataset.t; const r = await find(b.dataset.t); if (r && shouldPlay(r)) playPlan(r.play); }));
 </script>
 </body>
 </html>
