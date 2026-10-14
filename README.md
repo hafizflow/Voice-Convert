@@ -102,6 +102,24 @@ latency budget in the spec.
 
 ## Hear the Qari (core)
 
+### Run the demo
+
+A local page where you recite (or type) Quran text, it finds the verse and plays the reciter (Afasy) from that point.
+
+    python3 -m venv .venv
+    .venv/bin/pip install -r requirements.txt
+    .venv/bin/python -m tools.build_timestamps --reciter afasy      # one time; needs internet
+    .venv/bin/uvicorn tools.qari_demo:app --port 8200
+
+Then open http://127.0.0.1:8200 in **Chrome**.
+
+- The timestamp step is required: `data/timestamps/` is gitignored, so a fresh clone does not have it
+  (without it the demo returns a 500).
+- The mic button uses Chrome's built-in Arabic speech recognition; other browsers can only use typed text.
+- Reciter audio is streamed from its origin URL, so internet access is needed. Nothing is stored.
+- If you see `address already in use`, something is already on port 8200: stop it
+  (`lsof -nP -iTCP:8200 -sTCP:LISTEN`, then `kill <PID>`) or pass a different `--port`.
+
 
 **Short verses.** One- and two-word verses (55:1 ٱلرَّحْمَـٰنُ, 20:1 طه, 1:3, 89:1 ...) are placed by equating the
 recitation with a whole verse (confidence x0.9, since so little was said); a lone rare word (ص, ق) plays just that

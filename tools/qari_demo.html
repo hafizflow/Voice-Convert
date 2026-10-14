@@ -1,247 +1,435 @@
 <!doctype html>
 <html lang="en">
+
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hear the Qari: test page</title>
-<style>
-  :root { --bg:#fbfaf7; --fg:#1d2321; --muted:#667; --card:#fff; --line:#e3e0d8; --accent:#1f6f5c; --warn:#a15c00; --bad:#a3262a; --hl:#ffe9a8; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#14181a; --fg:#e8ece9; --muted:#9aa5a0; --card:#1c2224; --line:#2c3437; --accent:#5ec2a8; --warn:#e0a24a; --bad:#ff7b7f; --hl:#5a4a12; } }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.5 system-ui,-apple-system,sans-serif; }
-  main { max-width: 760px; margin: 0 auto; padding: 20px 16px 60px; }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  .sub { color: var(--muted); font-size: 14px; margin-bottom: 16px; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 14px; }
-  textarea { width:100%; min-height: 84px; font: 22px/1.8 "Amiri","Traditional Arabic","Geeza Pro",serif; direction: rtl; padding: 8px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg); }
-  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
-  button { font: inherit; padding: 8px 14px; border-radius: 8px; border:1px solid var(--line); background: var(--card); color: var(--fg); cursor:pointer; }
-  button.primary { background: var(--accent); color:#fff; border-color: var(--accent); }
-  button.rec.on { background: var(--bad); color:#fff; border-color: var(--bad); }
-  button:disabled { opacity:.5; cursor:default; }
-  label { font-size: 14px; color: var(--muted); }
-  input[type=number] { width: 70px; padding:6px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); }
-  .badge { display:inline-block; padding:2px 10px; border-radius: 99px; font-size: 13px; font-weight:600; }
-  .matched { background:#dff3ea; color:#0d5a43; } .ambiguous { background:#fff0d0; color:#7a4a00; }
-  .not_found,.too_short { background:#fde3e3; color:#8a1f23; }
-  .ayah { direction: rtl; font: 28px/2.2 "Amiri","Traditional Arabic","Geeza Pro",serif; }
-  .w { padding: 0 3px; border-radius: 6px; } .w.out { opacity:.4; } .w.playing { background: var(--hl); }
-  .w.mistake { text-decoration: underline wavy var(--bad); }
-  .meta { font-size: 13px; color: var(--muted); }
-  .alt { display:flex; gap:10px; justify-content:space-between; align-items:center; border-top:1px solid var(--line); padding:8px 0; }
-  .alt .t { direction: rtl; font: 20px/1.7 "Amiri","Traditional Arabic",serif; flex:1; text-align:right; }
-  .note { color: var(--warn); font-size: 13px; }
-  details { font-size: 13px; color: var(--muted); margin-top: 8px; } pre { overflow:auto; }
-  .samples button { font-size: 13px; padding: 4px 10px; }
-</style>
-</head>
-<body>
-<main>
-  <h1>Hear the Qari: test page</h1>
-  <div class="sub">Tap <b>Start listening</b> once, then recite a verse, hear the Qari, and recite the next. It repeats until you tap Stop. Matching, Tanzil text and Qari segments are the real pipeline; the microphone uses Chrome's Arabic recognition only as a stand-in for the Quran ASR that is not built yet.</div>
-
-  <div class="card">
-    <textarea id="text" placeholder="اكتب ما تلوت…" dir="rtl"></textarea>
-    <div class="row">
-      <button class="primary" id="go">Find and play</button>
-      <button class="rec" id="mic">Start listening</button>
-      <button id="reset">Reset session</button>
-    </div>
-    <div class="row">
-      <label>padding <input type="number" id="pad" value="100" min="0" max="500" step="10"> ms</label>
-      <label>end of speech after <input type="number" id="silence" value="1000" min="500" max="4000" step="100"> ms of silence</label>
-      <label><input type="checkbox" id="lowconf" checked> always play the best guess (untick to play only confident matches)</label>
-    </div>
-    <div class="row samples meta">Try:
-      <button data-t="قل هو الله احد الله الصمد">112:1-2</button>
-      <button data-t="لا تأخذه سنة ولا نوم له ما في السماوات وما في الأرض">mid-verse (2:255)</button>
-      <button data-t="الله لا اله الا هو الحي القيوم">opens 2:255 and 3:2</button>
-      <button data-t="فبأي آلاء ربكما تكذبان">refrain (ambiguous)</button>
-      <button data-t="أعوذ بالله من الشيطان الرجيم بسم الله الرحمن الرحيم قل هو الله أحد">with isti'adha + Basmala</button>
-      <button data-t="الحمد لله">2 words (too short)</button>
-    </div>
-  </div>
-
-  <div class="card" id="status" style="display:none"></div>
-  <div id="out"></div>
-  <audio id="audio" preload="auto"></audio>
-</main>
-<script>
-const $ = s => document.querySelector(s);
-let lastEnd = null, plan = null, token = 0;
-const audio = $('#audio');
-
-async function api(path, body) {
-  const r = await fetch(path, body ? {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body)} : {});
-  if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.statusText);
-  return r.json();
-}
-
-function shouldPlay(res) {
-  // with "always play" on, a forced best guess (ambiguous / too short / weak) plays too
-  return !!res.range && ($('#lowconf').checked || (res.status === 'matched' && res.confidence >= 0.9));
-}
-
-async function find(text, asrConf = 1.0) {
-  if (!text.trim()) return null;
-  $('#out').innerHTML = '<div class="card meta">matching…</div>';
-  try {
-    const res = await api('/api/match', {text, asr_confidence: asrConf, last_end_gid: lastEnd, pad_ms: +$('#pad').value});
-    render(res);
-    if (res.range && shouldPlay(res)) lastEnd = res.range.end_gid;   // the session only follows what was played
-    return res;
-  } catch (e) { $('#out').innerHTML = `<div class="card note">Error: ${e.message}</div>`; return null; }
-}
-
-function wordsHtml(play, mistakes) {
-  const bad = new Set((mistakes||[]).map(m => `${m.surah}:${m.ayah}:${m.word}`));
-  return play.segments.map((s, i) => `<div class="ayah">${
-    (s.words.length ? s.words : [{text: s.label, in_range:true}]).map((w, j) =>
-      `<span class="w ${w.in_range ? '' : 'out'} ${bad.has(`${w.surah}:${w.ayah}:${w.pos}`) ? 'mistake':''}" id="w-${i}-${j}">${w.text}</span>`).join(' ')
-  } <span class="meta" style="direction:ltr;unicode-bidi:isolate">${s.label}</span></div>`).join('');
-}
-
-function render(res) {
-  let h = `<div class="card"><span class="badge ${res.status}">${res.status.replace('_',' ')}</span> `;
-  h += `<span class="meta">confidence ${res.confidence} &middot; score ${res.score} &middot; match ${res.timings_ms.match} ms &middot; ${res.reciter}</span>`;
-  const f = res.flags, on = Object.keys(f).filter(k => f[k]);
-  if (on.length) h += `<div class="meta">${on.join(', ').replace(/_/g,' ')}</div>`;
-  if (res.range) {
-    if (res.forced) h += `<div class="note">Best guess (${res.status.replace('_',' ')}, ${res.forced.candidates} candidate${res.forced.candidates>1?'s':''}): playing the highest-scoring one. Other candidates below.</div>`;
-    h += `<h3 style="margin:10px 0 0">${res.range.ref}</h3>` + wordsHtml(res.play, res.mistakes);
-    (res.play.notes||[]).forEach(n => h += `<div class="note">${n}</div>`);
-    h += `<div class="row"><button class="primary" id="replay">Play</button><button id="stop">Stop</button></div>`;
-    if (res.mistakes.length) h += `<div class="meta">Differences from the text: ` +
-      res.mistakes.map(m => `${m.type} ${m.surah}:${m.ayah} word ${m.word}`).join('; ') + `</div>`;
-    if (!res.forced && res.confidence < 0.9) h += `<div class="note">Below the 0.9 gate: a real app would ask you to confirm.</div>`;
-  } else { h += `<div class="note">Nothing in the Quran resembled that: nothing to play.</div>`; }
-  if (res.alternatives.length) {
-    h += res.alternatives.map(a => `<div class="alt"><button data-s="${a.start_gid}" data-e="${a.end_gid}">Play</button>
-      <div class="t">${a.text}</div><div class="meta">${a.ref}<br>score ${a.score}</div></div>`).join('');
-  }
-  h += `<details><summary>raw response</summary><pre>${JSON.stringify({...res, play: undefined}, null, 1)}</pre></details></div>`;
-  $('#out').innerHTML = h;
-  if (res.play) plan = res.play;
-  $('#replay')?.addEventListener('click', () => playPlan(plan));
-  $('#stop')?.addEventListener('click', stop);
-  document.querySelectorAll('.alt button').forEach(b => b.addEventListener('click', async () => {
-    const r = await api(`/api/play?start_gid=${b.dataset.s}&end_gid=${b.dataset.e}&pad_ms=${+$('#pad').value}`);
-    lastEnd = r.range.end_gid;
-    $('#out').insertAdjacentHTML('afterbegin', `<div class="card"><h3 style="margin:0">${r.range.ref}</h3>${wordsHtml(r.play)}<div class="row"><button class="primary" id="replay2">Play</button></div></div>`);
-    plan = r.play; $('#replay2').addEventListener('click', () => playPlan(plan)); playPlan(plan);
-  }));
-}
-
-let active = [];
-function stop() {
-  token++;
-  active.forEach(a => { try { a.pause(); } catch (e) {} });
-  document.querySelectorAll('.w.playing').forEach(e => e.classList.remove('playing'));
-}
-
-// All segments start downloading at once; playback of the first begins as soon as its metadata is in.
-async function playPlan(p) {
-  stop();
-  const my = token;
-  active = p.segments.map(s => { const a = new Audio(); a.preload = 'auto'; a.src = s.audio_url; return a; });
-  for (let i = 0; i < p.segments.length && my === token; i++) {
-    const s = p.segments[i], a = active[i];
-    await new Promise(resolve => {
-      const done = () => { a.removeEventListener('timeupdate', onTime); a.removeEventListener('ended', done); a.removeEventListener('error', done); resolve(); };
-      const onTime = () => {
-        if (my !== token) return done();
-        const t = a.currentTime * 1000;
-        s.words.forEach((w, j) => {
-          const el = document.getElementById(`w-${i}-${j}`);
-          if (el) el.classList.toggle('playing', w.in_range && t >= w.start_ms && (w.end_ms == null || t < w.end_ms));
-        });
-        if (s.end_ms != null && t >= s.end_ms) { a.pause(); done(); }
-      };
-      a.addEventListener('timeupdate', onTime); a.addEventListener('ended', done); a.addEventListener('error', done);
-      const go = () => { a.currentTime = s.start_ms / 1000; a.play().catch(done); };
-      if (a.readyState >= 1) go(); else a.addEventListener('loadedmetadata', go, {once: true});
-    });
-    document.querySelectorAll('.w.playing').forEach(e => e.classList.remove('playing'));
-  }
-}
-
-// Hands-free loop: listen -> end of speech -> match -> play the Qari -> listen again, until stopped.
-// The microphone is off while the Qari plays, otherwise it would hear the playback.
-const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-let listening = false, handling = false, rec = null, silenceTimer = null, transcript = '', confs = [];
-
-function setStatus(text, cls = '') {
-  const el = $('#status'); el.style.display = text ? '' : 'none';
-  el.className = 'card ' + cls; el.textContent = text;
-}
-
-function beginRecognition() {
-  if (!listening) return;
-  transcript = ''; confs = [];
-  setStatus('Listening… recite a verse', 'meta');
-  rec = new SR(); rec.lang = 'ar-SA'; rec.continuous = true; rec.interimResults = true;
-  rec.onresult = e => {
-    let t = ''; confs = [];
-    for (let i = 0; i < e.results.length; i++) {
-      t += e.results[i][0].transcript + ' ';
-      if (e.results[i].isFinal && e.results[i][0].confidence) confs.push(e.results[i][0].confidence);
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hear the Qari: test page</title>
+  <style>
+    :root {
+      --bg: #fbfaf7;
+      --fg: #1d2321;
+      --muted: #667;
+      --card: #fff;
+      --line: #e3e0d8;
+      --accent: #1f6f5c;
+      --warn: #a15c00;
+      --bad: #a3262a;
+      --hl: #ffe9a8;
     }
-    transcript = t.trim(); $('#text').value = transcript;
-    clearTimeout(silenceTimer);
-    silenceTimer = setTimeout(endOfSpeech, +$('#silence').value);
-  };
-  rec.onerror = e => {
-    if (e.error === 'no-speech' || e.error === 'aborted') return;
-    stopListening();
-    setStatus(`Microphone stopped: ${e.error}`, 'note');
-  };
-  rec.onend = () => {   // the browser ended the session by itself (long silence): keep the loop going
-    if (listening && !handling) { transcript ? endOfSpeech() : setTimeout(beginRecognition, 200); }
-  };
-  try { rec.start(); } catch (e) { setTimeout(beginRecognition, 300); }
-}
 
-async function endOfSpeech() {
-  if (handling || !listening) return;
-  handling = true; clearTimeout(silenceTimer);
-  const text = transcript, conf = confs.length ? confs.reduce((a, b) => a + b) / confs.length : 1.0;
-  try { rec.onend = null; rec.abort(); } catch (e) {}
-  if (!text) { handling = false; return beginRecognition(); }
-  setStatus('Matching…', 'meta');
-  const res = await find(text, conf);
-  if (listening && res && shouldPlay(res)) {
-    setStatus('Playing the Qari… (microphone paused)', 'meta');
-    await playPlan(res.play);
-  } else if (listening) {
-    setStatus(res && res.status === 'ambiguous' ? 'Several places match: pick one below, or keep reciting'
-      : res && res.range ? 'Not sure enough to play: listening again'
-      : 'Did not recognise a verse: listening again', 'note');
-    await new Promise(r => setTimeout(r, 1200));
-  }
-  handling = false;
-  if (listening) setTimeout(beginRecognition, 350);
-}
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #14181a;
+        --fg: #e8ece9;
+        --muted: #9aa5a0;
+        --card: #1c2224;
+        --line: #2c3437;
+        --accent: #5ec2a8;
+        --warn: #e0a24a;
+        --bad: #ff7b7f;
+        --hl: #5a4a12;
+      }
+    }
 
-function startListening() {
-  listening = true; handling = false;
-  $('#mic').textContent = 'Stop'; $('#mic').classList.add('on');
-  stop(); beginRecognition();
-}
+    * {
+      box-sizing: border-box;
+    }
 
-function stopListening() {
-  listening = false; clearTimeout(silenceTimer);
-  try { rec.onend = null; rec.abort(); } catch (e) {}
-  stop();
-  $('#mic').textContent = 'Start listening'; $('#mic').classList.remove('on');
-  setStatus('Stopped', 'meta');
-}
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font: 16px/1.5 system-ui, -apple-system, sans-serif;
+    }
 
-if (!SR) { $('#mic').disabled = true; $('#mic').title = 'Needs Chrome or Edge'; }
-else $('#mic').addEventListener('click', () => listening ? stopListening() : startListening());
+    main {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 20px 16px 60px;
+    }
 
-$('#go').addEventListener('click', async () => { const r = await find($('#text').value); if (r && shouldPlay(r)) playPlan(r.play); });
-$('#reset').addEventListener('click', () => { lastEnd = null; $('#out').innerHTML = '<div class="card meta">session cleared</div>'; });
-document.querySelectorAll('.samples button').forEach(b => b.addEventListener('click', async () => { $('#text').value = b.dataset.t; const r = await find(b.dataset.t); if (r && shouldPlay(r)) playPlan(r.play); }));
-</script>
+    h1 {
+      font-size: 20px;
+      margin: 0 0 4px;
+    }
+
+    .sub {
+      color: var(--muted);
+      font-size: 14px;
+      margin-bottom: 16px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px;
+      margin-bottom: 14px;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 84px;
+      font: 22px/1.8 "Amiri", "Traditional Arabic", "Geeza Pro", serif;
+      direction: rtl;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--bg);
+      color: var(--fg);
+    }
+
+    .row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-top: 10px;
+    }
+
+    button {
+      font: inherit;
+      padding: 8px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--card);
+      color: var(--fg);
+      cursor: pointer;
+    }
+
+    button.primary {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
+    button.rec.on {
+      background: var(--bad);
+      color: #fff;
+      border-color: var(--bad);
+    }
+
+    button:disabled {
+      opacity: .5;
+      cursor: default;
+    }
+
+    label {
+      font-size: 14px;
+      color: var(--muted);
+    }
+
+    input[type=number] {
+      width: 70px;
+      padding: 6px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--bg);
+      color: var(--fg);
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 99px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .matched {
+      background: #dff3ea;
+      color: #0d5a43;
+    }
+
+    .ambiguous {
+      background: #fff0d0;
+      color: #7a4a00;
+    }
+
+    .not_found,
+    .too_short {
+      background: #fde3e3;
+      color: #8a1f23;
+    }
+
+    .ayah {
+      direction: rtl;
+      font: 28px/2.2 "Amiri", "Traditional Arabic", "Geeza Pro", serif;
+    }
+
+    .w {
+      padding: 0 3px;
+      border-radius: 6px;
+    }
+
+    .w.out {
+      opacity: .4;
+    }
+
+    .w.playing {
+      background: var(--hl);
+    }
+
+    .w.mistake {
+      text-decoration: underline wavy var(--bad);
+    }
+
+    .meta {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .alt {
+      display: flex;
+      gap: 10px;
+      justify-content: space-between;
+      align-items: center;
+      border-top: 1px solid var(--line);
+      padding: 8px 0;
+    }
+
+    .alt .t {
+      direction: rtl;
+      font: 20px/1.7 "Amiri", "Traditional Arabic", serif;
+      flex: 1;
+      text-align: right;
+    }
+
+    .note {
+      color: var(--warn);
+      font-size: 13px;
+    }
+
+    details {
+      font-size: 13px;
+      color: var(--muted);
+      margin-top: 8px;
+    }
+
+    pre {
+      overflow: auto;
+    }
+
+    .samples button {
+      font-size: 13px;
+      padding: 4px 10px;
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <h1>Hear the Qari: test page</h1>
+    <div class="sub">Tap <b>Start listening</b> once, then recite a verse, hear the Qari, and recite the next. It
+      repeats until you tap Stop. Matching, Tanzil text and Qari segments are the real pipeline; the microphone uses
+      Chrome's Arabic recognition only as a stand-in for the Quran ASR that is not built yet.</div>
+
+    <div class="card">
+      <textarea id="text" placeholder="اكتب ما تلوت…" dir="rtl"></textarea>
+      <div class="row">
+        <button class="primary" id="go">Find and play</button>
+        <button class="rec" id="mic">Start listening</button>
+        <button id="reset">Reset session</button>
+      </div>
+      <div class="row">
+        <label>padding <input type="number" id="pad" value="100" min="0" max="500" step="10"> ms</label>
+        <label>end of speech after <input type="number" id="silence" value="1000" min="500" max="4000" step="100"> ms of
+          silence</label>
+        <label><input type="checkbox" id="lowconf" checked> always play the best guess (untick to play only confident
+          matches)</label>
+      </div>
+      <div class="row samples meta">Try:
+        <button data-t="قل هو الله احد الله الصمد">112:1-2</button>
+        <button data-t="لا تأخذه سنة ولا نوم له ما في السماوات وما في الأرض">mid-verse (2:255)</button>
+        <button data-t="الله لا اله الا هو الحي القيوم">opens 2:255 and 3:2</button>
+        <button data-t="فبأي آلاء ربكما تكذبان">refrain (ambiguous)</button>
+        <button data-t="أعوذ بالله من الشيطان الرجيم بسم الله الرحمن الرحيم قل هو الله أحد">with isti'adha +
+          Basmala</button>
+        <button data-t="الحمد لله">2 words (too short)</button>
+      </div>
+    </div>
+
+    <div class="card" id="status" style="display:none"></div>
+    <div id="out"></div>
+    <audio id="audio" preload="auto"></audio>
+  </main>
+  <script>
+    const $ = s => document.querySelector(s);
+    let lastEnd = null, plan = null, token = 0;
+    const audio = $('#audio');
+
+    async function api(path, body) {
+      const r = await fetch(path, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {});
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+      return r.json();
+    }
+
+    function shouldPlay(res) {
+      // with "always play" on, a forced best guess (ambiguous / too short / weak) plays too
+      return !!res.range && ($('#lowconf').checked || (res.status === 'matched' && res.confidence >= 0.9));
+    }
+
+    async function find(text, asrConf = 1.0) {
+      if (!text.trim()) return null;
+      $('#out').innerHTML = '<div class="card meta">matching…</div>';
+      try {
+        const res = await api('/api/match', { text, asr_confidence: asrConf, last_end_gid: lastEnd, pad_ms: +$('#pad').value });
+        render(res);
+        if (res.range && shouldPlay(res)) lastEnd = res.range.end_gid;   // the session only follows what was played
+        return res;
+      } catch (e) { $('#out').innerHTML = `<div class="card note">Error: ${e.message}</div>`; return null; }
+    }
+
+    function wordsHtml(play, mistakes) {
+      const bad = new Set((mistakes || []).map(m => `${m.surah}:${m.ayah}:${m.word}`));
+      return play.segments.map((s, i) => `<div class="ayah">${(s.words.length ? s.words : [{ text: s.label, in_range: true }]).map((w, j) =>
+        `<span class="w ${w.in_range ? '' : 'out'} ${bad.has(`${w.surah}:${w.ayah}:${w.pos}`) ? 'mistake' : ''}" id="w-${i}-${j}">${w.text}</span>`).join(' ')
+        } <span class="meta" style="direction:ltr;unicode-bidi:isolate">${s.label}</span></div>`).join('');
+    }
+
+    function render(res) {
+      let h = `<div class="card"><span class="badge ${res.status}">${res.status.replace('_', ' ')}</span> `;
+      h += `<span class="meta">confidence ${res.confidence} &middot; score ${res.score} &middot; match ${res.timings_ms.match} ms &middot; ${res.reciter}</span>`;
+      const f = res.flags, on = Object.keys(f).filter(k => f[k]);
+      if (on.length) h += `<div class="meta">${on.join(', ').replace(/_/g, ' ')}</div>`;
+      if (res.range) {
+        if (res.forced) h += `<div class="note">Best guess (${res.status.replace('_', ' ')}, ${res.forced.candidates} candidate${res.forced.candidates > 1 ? 's' : ''}): playing the highest-scoring one. Other candidates below.</div>`;
+        h += `<h3 style="margin:10px 0 0">${res.range.ref}</h3>` + wordsHtml(res.play, res.mistakes);
+        (res.play.notes || []).forEach(n => h += `<div class="note">${n}</div>`);
+        h += `<div class="row"><button class="primary" id="replay">Play</button><button id="stop">Stop</button></div>`;
+        if (res.mistakes.length) h += `<div class="meta">Differences from the text: ` +
+          res.mistakes.map(m => `${m.type} ${m.surah}:${m.ayah} word ${m.word}`).join('; ') + `</div>`;
+        if (!res.forced && res.confidence < 0.9) h += `<div class="note">Below the 0.9 gate: a real app would ask you to confirm.</div>`;
+      } else { h += `<div class="note">Nothing in the Quran resembled that: nothing to play.</div>`; }
+      if (res.alternatives.length) {
+        h += res.alternatives.map(a => `<div class="alt"><button data-s="${a.start_gid}" data-e="${a.end_gid}">Play</button>
+      <div class="t">${a.text}</div><div class="meta">${a.ref}<br>score ${a.score}</div></div>`).join('');
+      }
+      h += `<details><summary>raw response</summary><pre>${JSON.stringify({ ...res, play: undefined }, null, 1)}</pre></details></div>`;
+      $('#out').innerHTML = h;
+      if (res.play) plan = res.play;
+      $('#replay')?.addEventListener('click', () => playPlan(plan));
+      $('#stop')?.addEventListener('click', stop);
+      document.querySelectorAll('.alt button').forEach(b => b.addEventListener('click', async () => {
+        const r = await api(`/api/play?start_gid=${b.dataset.s}&end_gid=${b.dataset.e}&pad_ms=${+$('#pad').value}`);
+        lastEnd = r.range.end_gid;
+        $('#out').insertAdjacentHTML('afterbegin', `<div class="card"><h3 style="margin:0">${r.range.ref}</h3>${wordsHtml(r.play)}<div class="row"><button class="primary" id="replay2">Play</button></div></div>`);
+        plan = r.play; $('#replay2').addEventListener('click', () => playPlan(plan)); playPlan(plan);
+      }));
+    }
+
+    let active = [];
+    function stop() {
+      token++;
+      active.forEach(a => { try { a.pause(); } catch (e) { } });
+      document.querySelectorAll('.w.playing').forEach(e => e.classList.remove('playing'));
+    }
+
+    // All segments start downloading at once; playback of the first begins as soon as its metadata is in.
+    async function playPlan(p) {
+      stop();
+      const my = token;
+      active = p.segments.map(s => { const a = new Audio(); a.preload = 'auto'; a.src = s.audio_url; return a; });
+      for (let i = 0; i < p.segments.length && my === token; i++) {
+        const s = p.segments[i], a = active[i];
+        await new Promise(resolve => {
+          const done = () => { a.removeEventListener('timeupdate', onTime); a.removeEventListener('ended', done); a.removeEventListener('error', done); resolve(); };
+          const onTime = () => {
+            if (my !== token) return done();
+            const t = a.currentTime * 1000;
+            s.words.forEach((w, j) => {
+              const el = document.getElementById(`w-${i}-${j}`);
+              if (el) el.classList.toggle('playing', w.in_range && t >= w.start_ms && (w.end_ms == null || t < w.end_ms));
+            });
+            if (s.end_ms != null && t >= s.end_ms) { a.pause(); done(); }
+          };
+          a.addEventListener('timeupdate', onTime); a.addEventListener('ended', done); a.addEventListener('error', done);
+          const go = () => { a.currentTime = s.start_ms / 1000; a.play().catch(done); };
+          if (a.readyState >= 1) go(); else a.addEventListener('loadedmetadata', go, { once: true });
+        });
+        document.querySelectorAll('.w.playing').forEach(e => e.classList.remove('playing'));
+      }
+    }
+
+    // Hands-free loop: listen -> end of speech -> match -> play the Qari -> listen again, until stopped.
+    // The microphone is off while the Qari plays, otherwise it would hear the playback.
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    let listening = false, handling = false, rec = null, silenceTimer = null, transcript = '', confs = [];
+
+    function setStatus(text, cls = '') {
+      const el = $('#status'); el.style.display = text ? '' : 'none';
+      el.className = 'card ' + cls; el.textContent = text;
+    }
+
+    function beginRecognition() {
+      if (!listening) return;
+      transcript = ''; confs = [];
+      setStatus('Listening… recite a verse', 'meta');
+      rec = new SR(); rec.lang = 'ar-SA'; rec.continuous = true; rec.interimResults = true;
+      rec.onresult = e => {
+        let t = ''; confs = [];
+        for (let i = 0; i < e.results.length; i++) {
+          t += e.results[i][0].transcript + ' ';
+          if (e.results[i].isFinal && e.results[i][0].confidence) confs.push(e.results[i][0].confidence);
+        }
+        transcript = t.trim(); $('#text').value = transcript;
+        clearTimeout(silenceTimer);
+        silenceTimer = setTimeout(endOfSpeech, +$('#silence').value);
+      };
+      rec.onerror = e => {
+        if (e.error === 'no-speech' || e.error === 'aborted') return;
+        stopListening();
+        setStatus(`Microphone stopped: ${e.error}`, 'note');
+      };
+      rec.onend = () => {   // the browser ended the session by itself (long silence): keep the loop going
+        if (listening && !handling) { transcript ? endOfSpeech() : setTimeout(beginRecognition, 200); }
+      };
+      try { rec.start(); } catch (e) { setTimeout(beginRecognition, 300); }
+    }
+
+    async function endOfSpeech() {
+      if (handling || !listening) return;
+      handling = true; clearTimeout(silenceTimer);
+      const text = transcript, conf = confs.length ? confs.reduce((a, b) => a + b) / confs.length : 1.0;
+      try { rec.onend = null; rec.abort(); } catch (e) { }
+      if (!text) { handling = false; return beginRecognition(); }
+      setStatus('Matching…', 'meta');
+      const res = await find(text, conf);
+      if (listening && res && shouldPlay(res)) {
+        setStatus('Playing the Qari… (microphone paused)', 'meta');
+        await playPlan(res.play);
+      } else if (listening) {
+        setStatus(res && res.status === 'ambiguous' ? 'Several places match: pick one below, or keep reciting'
+          : res && res.range ? 'Not sure enough to play: listening again'
+            : 'Did not recognise a verse: listening again', 'note');
+        await new Promise(r => setTimeout(r, 1200));
+      }
+      handling = false;
+      if (listening) setTimeout(beginRecognition, 350);
+    }
+
+    function startListening() {
+      listening = true; handling = false;
+      $('#mic').textContent = 'Stop'; $('#mic').classList.add('on');
+      stop(); beginRecognition();
+    }
+
+    function stopListening() {
+      listening = false; clearTimeout(silenceTimer);
+      try { rec.onend = null; rec.abort(); } catch (e) { }
+      stop();
+      $('#mic').textContent = 'Start listening'; $('#mic').classList.remove('on');
+      setStatus('Stopped', 'meta');
+    }
+
+    if (!SR) { $('#mic').disabled = true; $('#mic').title = 'Needs Chrome or Edge'; }
+    else $('#mic').addEventListener('click', () => listening ? stopListening() : startListening());
+
+    $('#go').addEventListener('click', async () => { const r = await find($('#text').value); if (r && shouldPlay(r)) playPlan(r.play); });
+    $('#reset').addEventListener('click', () => { lastEnd = null; $('#out').innerHTML = '<div class="card meta">session cleared</div>'; });
+    document.querySelectorAll('.samples button').forEach(b => b.addEventListener('click', async () => { $('#text').value = b.dataset.t; const r = await find(b.dataset.t); if (r && shouldPlay(r)) playPlan(r.play); }));
+  </script>
 </body>
+
 </html>

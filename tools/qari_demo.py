@@ -8,12 +8,14 @@ are the real code paths. Audio is streamed from the reciter's origin URL; nothin
 """
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
+import httpx
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel, ValidationError
 
 from qari.align.store import TimestampStore
 from qari.match.matcher import Matcher, MatchResult, SessionContext
@@ -114,8 +116,7 @@ def best_guess(r: MatchResult, last_end_gid: int | None):
     return min(r.alternatives, key=key)
 
 
-@app.post("/api/match")
-def match(req: MatchRequest) -> dict:
+def run_match(req: MatchRequest) -> dict:
     st = state()
     t = time.perf_counter()
     session = SessionContext(req.last_end_gid) if req.last_end_gid is not None else None
@@ -137,6 +138,11 @@ def match(req: MatchRequest) -> dict:
     return out
 
 
+@app.post("/api/match")
+def match(req: MatchRequest) -> dict:
+    return run_match(req)
+
+
 @app.get("/api/play")
 def play(start_gid: int, end_gid: int, pad_ms: int = 100) -> dict:
     st = state()
@@ -146,6 +152,101 @@ def play(start_gid: int, end_gid: int, pad_ms: int = 100) -> dict:
     return {"range": {"start_gid": start_gid, "end_gid": end_gid, "ref": _ref(st["idx"], start_gid, end_gid),
                       "text": st["idx"].text(start_gid, end_gid)},
             "play": play_plan(st, start_gid, end_gid, False, pad_ms)}
+
+
+# --- Same-server audio and the WebSocket API used by the Flutter app -------------------------------------
+
+_AUDIO_FILE = re.compile(r"^(\d{3})(\d{3})\.mp3$")
+_FORWARD = ("content-type", "content-length", "content-range", "accept-ranges", "etag", "last-modified")
+
+
+@app.get("/api/audio/{name}")
+async def audio(name: str, request: Request) -> StreamingResponse:
+    """Pass-through of one reciter ayah file so clients fetch audio from this server. Nothing is stored;
+    Range is forwarded so players can seek. Only NNNNNN.mp3 names are accepted (never an arbitrary URL)."""
+    m = _AUDIO_FILE.match(name)
+    if not m or not (1 <= int(m[1]) <= 114) or int(m[2]) < 1:
+        raise HTTPException(400, "bad audio name")
+    url = state()["reciter"].audio_url(int(m[1]), int(m[2]))
+    headers = {"accept-encoding": "identity"}      # bytes pass through untouched, so content-length stays true
+    if "range" in request.headers:
+        headers["range"] = request.headers["range"]
+    client = httpx.AsyncClient(timeout=30)
+    try:
+        up = await client.send(client.build_request("GET", url, headers=headers), stream=True)
+    except httpx.HTTPError:
+        await client.aclose()
+        raise HTTPException(502, "audio origin unreachable")
+
+    async def body():
+        try:
+            async for chunk in up.aiter_bytes():
+                yield chunk
+        finally:
+            await up.aclose()
+            await client.aclose()
+    if up.status_code >= 400:
+        await up.aclose()
+        await client.aclose()
+        raise HTTPException(502 if up.status_code >= 500 else up.status_code, "audio origin error")
+    return StreamingResponse(body(), status_code=up.status_code,
+                             headers={k: v for k, v in up.headers.items() if k.lower() in _FORWARD})
+
+
+def localize_audio(out: dict, base: str) -> dict:
+    """Point every segment's audio_url at this server's /api/audio proxy (same file name)."""
+    for seg in (out.get("play") or {}).get("segments", []):
+        seg["audio_url"] = f"{base}/api/audio/{seg['audio_url'].rsplit('/', 1)[-1]}"
+    return out
+
+
+@app.websocket("/ws/recite")
+async def recite(ws: WebSocket) -> None:
+    """One connection = one recitation session; the server keeps last_end_gid.
+
+    client -> {"type":"utterance","text":..,"asr_confidence":0..1,"pad_ms":100}   -> {"type":"result",..same body as /api/match..}
+              {"type":"play","start_gid":..,"end_gid":..,"pad_ms":100}           -> {"type":"result",..}
+              {"type":"reset"}                                                   -> {"type":"reset"}
+    Every reply echoes an optional client "id". Errors: {"type":"error","message":..} (connection stays open).
+    """
+    await ws.accept()
+    base = f"{ws.url.scheme.replace('ws', 'http')}://{ws.headers.get('host', ws.url.netloc)}"
+    last_end: int | None = None
+    while True:
+        try:
+            msg = await ws.receive_json()
+        except WebSocketDisconnect:
+            return
+        except ValueError:
+            await ws.send_json({"type": "error", "message": "invalid JSON"})
+            continue
+        if not isinstance(msg, dict):
+            await ws.send_json({"type": "error", "message": "message must be an object"})
+            continue
+        rid = msg.get("id")
+        kind = msg.get("type")
+        try:
+            if kind == "utterance":
+                req = MatchRequest(text=msg.get("text", ""), asr_confidence=msg.get("asr_confidence", 1.0),
+                                   pad_ms=msg.get("pad_ms", 100), last_end_gid=last_end)
+                out = run_match(req)
+                if out.get("range"):
+                    last_end = out["range"]["end_gid"]
+            elif kind == "play":
+                out = play(int(msg["start_gid"]), int(msg["end_gid"]), int(msg.get("pad_ms", 100)))
+                last_end = out["range"]["end_gid"]
+            elif kind == "reset":
+                last_end = None
+                await ws.send_json({"type": "reset", "id": rid})
+                continue
+            else:
+                await ws.send_json({"type": "error", "message": f"unknown type {kind!r}", "id": rid})
+                continue
+        except (ValidationError, KeyError, TypeError, ValueError, HTTPException) as e:
+            detail = e.detail if isinstance(e, HTTPException) else "bad request"
+            await ws.send_json({"type": "error", "message": str(detail), "id": rid})
+            continue
+        await ws.send_json({"type": "result", "id": rid, **localize_audio(out, base)})
 
 
 @app.get("/")

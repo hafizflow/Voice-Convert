@@ -1,3 +1,4 @@
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -70,3 +71,73 @@ def test_single_word_verse_ar_rahman_is_matched_and_playable(client):
         r = client.post("/api/match", json={"text": text, "asr_confidence": 0.9}).json()
         assert r["status"] == "matched" and r["range"]["ref"] == "55:1"
         assert r["play"]["segments"] and not r.get("forced")
+
+
+# --- WebSocket API (Flutter) ------------------------------------------------
+
+def _ws_ask(ws, **msg):
+    ws.send_json(msg)
+    return ws.receive_json()
+
+
+def test_ws_result_matches_http_match(client):
+    texts = ["قل هو الله احد الله الصمد", "الله لا اله الا هو الحي القيوم", "الحمد لله",
+             "قطة تأكل سمكة كبيرة جدا", "الرحمن"]
+    with client.websocket_connect("/ws/recite") as ws:
+        for text in texts:
+            ws_r = _ws_ask(ws, type="utterance", text=text, id=text)
+            ws.send_json({"type": "reset"}); assert ws.receive_json()["type"] == "reset"
+            http_r = client.post("/api/match", json={"text": text}).json()
+            assert ws_r.pop("type") == "result" and ws_r.pop("id") == text
+            for r in (ws_r, http_r):
+                r.pop("timings_ms")
+                for seg in (r.get("play") or {}).get("segments", []):
+                    seg["audio_url"] = seg["audio_url"].rsplit("/", 1)[-1]
+            assert ws_r == http_r
+
+
+def test_ws_audio_urls_point_at_this_server(client):
+    with client.websocket_connect("/ws/recite") as ws:
+        r = _ws_ask(ws, type="utterance", text="قل هو الله احد الله الصمد")
+    urls = [s["audio_url"] for s in r["play"]["segments"]]
+    assert urls == ["http://testserver/api/audio/112001.mp3", "http://testserver/api/audio/112002.mp3"]
+
+
+def test_ws_session_follows_forward_and_reset_clears_it(client):
+    refrain = "فبأي آلاء ربكما تكذبان"
+    with client.websocket_connect("/ws/recite") as ws:
+        first = _ws_ask(ws, type="utterance", text=refrain)
+        second = _ws_ask(ws, type="utterance", text=refrain)
+        assert first["range"]["end_gid"] < second["range"]["start_gid"]     # moved on, not stuck
+        ws.send_json({"type": "reset"}); ws.receive_json()
+        assert _ws_ask(ws, type="utterance", text=refrain)["range"] == first["range"]
+
+
+def test_ws_play_and_errors_keep_the_connection_open(client):
+    with client.websocket_connect("/ws/recite") as ws:
+        assert _ws_ask(ws, type="nope", id=7) == {"type": "error", "message": "unknown type 'nope'", "id": 7}
+        assert _ws_ask(ws, type="play", start_gid=10, end_gid=5)["type"] == "error"
+        assert _ws_ask(ws, type="utterance")["type"] == "result"          # missing text is just empty input
+        ws.send_text("not json")
+        assert ws.receive_json()["type"] == "error"
+        assert _ws_ask(ws, type="play", start_gid=0, end_gid=0)["play"]["segments"]
+
+
+def test_audio_proxy_rejects_anything_but_ayah_files(client):
+    for bad in ("..%2Fetc%2Fpasswd", "abc.mp3", "115001.mp3", "001000.mp3", "1001.mp3"):
+        assert client.get(f"/api/audio/{bad}").status_code in (400, 404)
+
+
+def test_audio_proxy_streams_origin_with_range(client, monkeypatch):
+    seen = {}
+
+    def handler(request):
+        seen["url"], seen["range"] = str(request.url), request.headers.get("range")
+        return httpx.Response(206, content=b"ID3abc", headers={"content-type": "audio/mpeg",
+                                                               "content-range": "bytes 0-5/100"})
+    real = httpx.AsyncClient
+    monkeypatch.setattr(qari_demo.httpx, "AsyncClient",
+                        lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    r = client.get("/api/audio/112001.mp3", headers={"range": "bytes=0-5"})
+    assert r.status_code == 206 and r.content == b"ID3abc" and r.headers["content-range"] == "bytes 0-5/100"
+    assert seen == {"url": "https://everyayah.com/data/Alafasy_128kbps/112001.mp3", "range": "bytes=0-5"}
