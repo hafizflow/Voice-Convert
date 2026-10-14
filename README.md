@@ -6,6 +6,17 @@ Status: **skeleton**. The full pipeline (mic → LiveKit → worker → speaker)
 Spec: `docs/superpowers/specs/2026-10-13-realtime-arabic-voice-conversion-design.md`
 Plan: `docs/superpowers/plans/2026-10-13-skeleton-pipeline.md`
 
+This repo has two independent features. Each has its own run instructions:
+
+| Feature | What it does | Needs | Run it |
+|---|---|---|---|
+| **1. Voice conversion** (speech) | Speak into the mic, hear your voice converted in real time | LiveKit, worker, token server | [Feature 1](#feature-1-voice-conversion-speech) |
+| **2. Hear the Qari** (recitation) | Recite Quran, it finds the verse and plays the reciter from there | One FastAPI app, Chrome | [Feature 2](#feature-2-hear-the-qari-recitation) |
+
+They share the repo but not services: you can run either one without the other.
+
+# Feature 1: Voice conversion (speech)
+
 ## Run locally (macOS)
 
 ```bash
@@ -100,9 +111,11 @@ floor before any inference; it is not caused by the `AudioSource` queues. See th
 finding: likely stacked WebRTC receive jitter buffers. Investigate before trusting the
 latency budget in the spec.
 
-## Hear the Qari (core)
+# Feature 2: Hear the Qari (recitation)
 
-### Run the demo
+Does not need LiveKit, the worker, or any of Feature 1's services.
+
+## Run the demo
 
 A local page where you recite (or type) Quran text, it finds the verse and plays the reciter (Afasy) from that point.
 
