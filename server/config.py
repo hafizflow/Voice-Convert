@@ -67,4 +67,3 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
 
 
 
-# Hafiz 
