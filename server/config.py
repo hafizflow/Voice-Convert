@@ -65,6 +65,4 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         rvc_pitch_shift=int(env.get("RVC_PITCH_SHIFT", "0")),
     )
 
-
-
-# Hafiz 
+     # Hello World
