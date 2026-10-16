@@ -25,6 +25,7 @@ class Config:
     rvc_f0: str = "fcpe"
     rvc_device: str | None = "cpu"
     rvc_index_rate: float = 0.4
+    rvc_pitch_shift: int = 0     # semitones applied to the speaker before conversion
 
 
 def load_config(env: Mapping[str, str] | None = None) -> Config:
@@ -61,4 +62,8 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         rvc_f0=env.get("RVC_F0", "fcpe"),
         rvc_device=env.get("RVC_DEVICE", "cpu") or None,
         rvc_index_rate=float(env.get("RVC_INDEX_RATE", "0.4")),
+        rvc_pitch_shift=int(env.get("RVC_PITCH_SHIFT", "0")),
     )
+
+
+

@@ -1,0 +1,6 @@
+name: Mishari Rashid al-Afasy (AI practice voice)
+f0_median_hz: 143.5
+consent_source: Trained for personal practice use from Mishary Rashid Alafasy's Surah
+  Yusuf (012) recitation downloaded from mp3quran.net
+model: model.pth
+index: added.index

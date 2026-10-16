@@ -66,8 +66,9 @@ def test_dev_mode_allows_dev_defaults():
 
 def test_rvc_defaults_and_overrides():
     c = load_config(BASE)
-    assert (c.rvc_block_ms, c.rvc_f0, c.rvc_device) == (200, "fcpe", "cpu")
+    assert (c.rvc_block_ms, c.rvc_f0, c.rvc_device, c.rvc_pitch_shift) == (200, "fcpe", "cpu", 0)
     c = load_config({**BASE, "RVC_BLOCK_MS": "100", "RVC_EXTRA_S": "0.3", "RVC_F0": "rmvpe",
-                     "RVC_DEVICE": "mps", "RVC_INDEX_RATE": "0.0"})
+                     "RVC_DEVICE": "mps", "RVC_INDEX_RATE": "0.0", "RVC_PITCH_SHIFT": "-3"})
+    assert c.rvc_pitch_shift == -3
     assert (c.rvc_block_ms, c.rvc_extra_s, c.rvc_f0, c.rvc_device, c.rvc_index_rate) == (
         100, 0.3, "rmvpe", "mps", 0.0)

@@ -13,6 +13,7 @@ def default_converter_factory(cfg):
             voice.model_path, voice.index_path,
             block_ms=cfg.rvc_block_ms, extra_s=cfg.rvc_extra_s, f0_method=cfg.rvc_f0,
             device=cfg.rvc_device, index_rate=cfg.rvc_index_rate,
+            pitch_shift=cfg.rvc_pitch_shift,
         )
 
     return build

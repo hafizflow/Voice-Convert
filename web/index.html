@@ -104,6 +104,9 @@ async function loadVoices() {
     const o = document.createElement('option');
     o.value = v.id; o.textContent = v.name; sel.append(o);
   }
+  // Prefer a real converted voice over the pass-through demo (which just plays your own voice back).
+  const real = voices.find((v) => v.id !== 'demo');
+  if (real) sel.value = real.id;
 }
 
 function meter(sourceNode, barId) {
