@@ -64,7 +64,3 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         rvc_index_rate=float(env.get("RVC_INDEX_RATE", "0.4")),
         rvc_pitch_shift=int(env.get("RVC_PITCH_SHIFT", "0")),
     )
-
-
-
-# Hafiz Anwar
